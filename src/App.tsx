@@ -9,6 +9,8 @@ function App() {
       <Route path="/" element={<HomePage />} />
       <Route path="/explore" element={<ExplorePage />} />
       <Route path="/play/invisible-curtain" element={<PlayPage />} />
+      <Route path="/play/bubbleverse" element={<PlayPage />} />
+      <Route path="/play/reality-rift" element={<PlayPage />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

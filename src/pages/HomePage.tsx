@@ -11,17 +11,19 @@ const featuredEffects = [
   },
   {
     number: '02',
-    name: '延迟镜像',
-    status: '即将上线',
-    description: '镜头里的你，会比现实慢几秒。',
+    name: '泡泡宇宙',
+    status: '立即体验',
+    description: '碰它、戳破它，让整个泡泡世界回应你的动作。',
+    path: '/play/bubbleverse',
     tone: 'blue',
   },
   {
     number: '03',
-    name: '传送门',
-    status: '即将上线',
-    description: '在现实画面中打开通往另一个世界的入口。',
-    tone: 'orange',
+    name: '空间裂缝',
+    status: '立即体验',
+    description: '用双手撕开现实，看看另一边是什么。',
+    path: '/play/reality-rift',
+    tone: 'rift',
   },
 ]
 
@@ -88,6 +90,12 @@ function HomePage() {
                       <div className="curtain-preview-cloth" />
                       <i className="curtain-preview-grab" />
                     </div>
+                  ) : effect.tone === 'blue' ? (
+                    <div className="bubble-card-preview" aria-hidden="true">
+                      <i /><i /><i /><i /><i />
+                    </div>
+                  ) : effect.tone === 'rift' ? (
+                    <div className="rift-card-preview" aria-hidden="true"><i /><span /></div>
                   ) : <div className="effect-shape" />}
                   <p className="visual-label">玩法 / {effect.number}</p>
                 </div>

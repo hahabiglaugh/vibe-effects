@@ -1,5 +1,6 @@
 import type { CameraFacingMode } from '../../services/cameraService'
 import type { TrackedHand } from '../../services/handTrackingService'
+import type { QualityLevel } from '../../services/performanceMonitor'
 
 type Point = {
   x: number
@@ -58,13 +59,19 @@ export class InvisibleCurtainEffect {
   private width = 0
   private height = 0
   private onFirstHandGrab?: () => void
+  private onFirstCurtainMove?: () => void
   private hasReportedHandGrab = false
+  private hasReportedCurtainMove = false
+  private firstGrabPosition: { x: number; y: number } | null = null
+  private quality: QualityLevel = 'high'
+  private paused = false
 
   constructor(
     canvas: HTMLCanvasElement,
     cameraVideo: HTMLVideoElement,
     facingMode: CameraFacingMode,
     onFirstHandGrab?: () => void,
+    onFirstCurtainMove?: () => void,
   ) {
     const context = canvas.getContext('2d')
     if (!context) throw new Error('Canvas 2D context is unavailable.')
@@ -74,6 +81,7 @@ export class InvisibleCurtainEffect {
     this.cameraVideo = cameraVideo
     this.facingMode = facingMode
     this.onFirstHandGrab = onFirstHandGrab
+    this.onFirstCurtainMove = onFirstCurtainMove
 
     this.canvas.style.touchAction = 'none'
     this.canvas.addEventListener('pointerdown', this.handlePointerDown)
@@ -88,6 +96,15 @@ export class InvisibleCurtainEffect {
 
   setFacingMode(facingMode: CameraFacingMode) {
     this.facingMode = facingMode
+  }
+
+  setQuality(quality: QualityLevel) { this.quality = quality }
+
+  setPaused(paused: boolean) {
+    if (this.paused === paused || this.destroyed) return
+    this.paused = paused
+    if (paused && this.animationFrame !== null) cancelAnimationFrame(this.animationFrame)
+    if (!paused) this.animate()
   }
 
   setHands(hands: TrackedHand[]) {
@@ -317,7 +334,7 @@ export class InvisibleCurtainEffect {
   }
 
   private animate = () => {
-    if (this.destroyed) return
+    if (this.destroyed || this.paused) return
     this.frame += 1
     this.updatePhysics()
     this.calculatePerimeter()
@@ -379,12 +396,21 @@ export class InvisibleCurtainEffect {
           this.handGrabbedPoints.set(hand.id, handPoint)
           if (!this.hasReportedHandGrab) {
             this.hasReportedHandGrab = true
+            this.firstGrabPosition = { x: hand.x, y: hand.y }
             this.onFirstHandGrab?.()
           }
         }
       }
 
       if (handPoint) {
+        if (
+          !this.hasReportedCurtainMove &&
+          this.firstGrabPosition &&
+          Math.hypot(hand.x - this.firstGrabPosition.x, hand.y - this.firstGrabPosition.y) > 36
+        ) {
+          this.hasReportedCurtainMove = true
+          this.onFirstCurtainMove?.()
+        }
         handPoint.oldX = handPoint.x
         handPoint.oldY = handPoint.y
         handPoint.x = hand.x
@@ -428,7 +454,8 @@ export class InvisibleCurtainEffect {
       point.wasGrabbed = grabbed
     }
 
-    for (let iteration = 0; iteration < ITERATIONS; iteration += 1) {
+    const constraintIterations = this.quality === 'high' ? ITERATIONS : this.quality === 'medium' ? 8 : 5
+    for (let iteration = 0; iteration < constraintIterations; iteration += 1) {
       for (const stick of this.sticks) {
         const deltaX = stick.p2.x - stick.p1.x
         const deltaY = stick.p2.y - stick.p1.y
@@ -574,8 +601,9 @@ export class InvisibleCurtainEffect {
 
   private renderClothVisuals() {
     const context = this.context
-    for (let y = 0; y < CLOTH_ROWS - 1; y += 1) {
-      for (let x = 0; x < CLOTH_COLS - 1; x += 1) {
+    const visualStep = this.quality === 'low' ? 2 : 1
+    for (let y = 0; y < CLOTH_ROWS - 1; y += visualStep) {
+      for (let x = 0; x < CLOTH_COLS - 1; x += visualStep) {
         const p1 = this.points[y * CLOTH_COLS + x]
         const p2 = this.points[y * CLOTH_COLS + x + 1]
         const p3 = this.points[(y + 1) * CLOTH_COLS + x + 1]
@@ -606,7 +634,7 @@ export class InvisibleCurtainEffect {
     context.stroke()
 
     this.traceSmoothPerimeter()
-    context.shadowBlur = 12
+    context.shadowBlur = this.quality === 'high' ? 12 : this.quality === 'medium' ? 8 : 3
     context.shadowColor = 'rgba(255, 255, 255, .8)'
     context.strokeStyle = 'rgba(255, 255, 255, .7)'
     context.lineWidth = 1.5

@@ -1,6 +1,17 @@
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { InvisibleCurtainEffect } from '../effects/invisible-curtain/InvisibleCurtainEffect'
+import {
+  BubbleverseEffect,
+  BUBBLEVERSE_PRESETS,
+  DEFAULT_BUBBLEVERSE_TUNING,
+  type BubbleverseTuning,
+} from '../effects/bubbleverse/BubbleverseEffect'
+import {
+  RealityRiftEffect,
+  DEFAULT_REALITY_RIFT_TUNING,
+  type RealityRiftTuning,
+} from '../effects/reality-rift/RealityRiftEffect'
 import {
   CameraService,
   CameraServiceError,
@@ -17,6 +28,7 @@ import {
   downloadBlob,
   isMp4Blob,
 } from '../services/videoExportService'
+import { PerformanceMonitor, type QualityLevel } from '../services/performanceMonitor'
 
 type CameraStatus = 'idle' | 'requesting' | 'active' | 'switching' | 'error'
 type RecordingStatus = 'idle' | 'countdown' | 'recording' | 'stopping' | 'preview'
@@ -24,7 +36,8 @@ const GESTURE_TIP_KEY = 'vibe-effects-invisible-curtain-grabbed'
 
 const errorContent: Record<CameraErrorCode, { title: string; description?: string }> = {
   'permission-denied': {
-    title: '无法访问摄像头，请在浏览器设置中允许摄像头权限。',
+    title: '需要摄像头权限才能使用手势互动',
+    description: '请在浏览器设置中允许摄像头权限，然后重新尝试。',
   },
   'not-found': {
     title: '未检测到可用摄像头',
@@ -36,12 +49,21 @@ const errorContent: Record<CameraErrorCode, { title: string; description?: strin
 
 function PlayPage() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const isBubbleverse = location.pathname.endsWith('/bubbleverse')
+  const isRealityRift = location.pathname.endsWith('/reality-rift')
+  const isInvisibleCurtain = !isBubbleverse && !isRealityRift
+  const effectId = isBubbleverse ? 'bubbleverse' : isRealityRift ? 'reality-rift' : 'invisible-curtain'
+  const tutorialKey = `vibe-effects-tutorial-${effectId}`
+  const effectName = isBubbleverse ? '泡泡宇宙' : isRealityRift ? '空间裂缝' : '透明幕布'
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const mediaInputRef = useRef<HTMLInputElement>(null)
   const cameraServiceRef = useRef(new CameraService())
   const handTrackingServiceRef = useRef<HandTrackingService | null>(null)
   const curtainEffectRef = useRef<InvisibleCurtainEffect | null>(null)
+  const bubbleverseEffectRef = useRef<BubbleverseEffect | null>(null)
+  const realityRiftEffectRef = useRef<RealityRiftEffect | null>(null)
   const recordingServiceRef = useRef(new RecordingService())
   const mountedRef = useRef(true)
   const countdownTimerRef = useRef<number | null>(null)
@@ -50,7 +72,10 @@ function PlayPage() {
   const stoppingRecordingRef = useRef(false)
   const exportAbortControllerRef = useRef<AbortController | null>(null)
   const gestureTipTimerRef = useRef<number | null>(null)
-  const performanceRef = useRef({ frames: 0, inferences: 0 })
+  const performanceMonitorRef = useRef<PerformanceMonitor | null>(null)
+  const performanceFrameRef = useRef<number | null>(null)
+  const qualityRef = useRef<QualityLevel>(matchMedia('(pointer: coarse)').matches ? 'medium' : 'high')
+  const bubbleTutorialPopRef = useRef(false)
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [facingMode, setFacingMode] = useState<CameraFacingMode>('user')
   const [cameraError, setCameraError] = useState<CameraErrorCode | null>(null)
@@ -67,6 +92,24 @@ function PlayPage() {
   const [exportMessage, setExportMessage] = useState<string | null>(null)
   const [showGestureTip, setShowGestureTip] = useState(false)
   const [exitConfirmationOpen, setExitConfirmationOpen] = useState(false)
+  const [showBubbleHint, setShowBubbleHint] = useState(true)
+  const [showRiftHint, setShowRiftHint] = useState(true)
+  const [riftGrabState, setRiftGrabState] = useState<'idle' | 'armed' | 'dual_locked' | 'closing'>('idle')
+  const [riftDebugEnabled, setRiftDebugEnabled] = useState(false)
+  const [riftPanelOpen, setRiftPanelOpen] = useState(false)
+  const [riftTuning, setRiftTuning] = useState<RealityRiftTuning>(() => ({ ...DEFAULT_REALITY_RIFT_TUNING }))
+  const [coachStep, setCoachStep] = useState<0 | 1 | null>(null)
+  const [mediaToast, setMediaToast] = useState(false)
+  const [showPermissionReminder, setShowPermissionReminder] = useState(false)
+  const [cameraPaused, setCameraPaused] = useState(false)
+  const [capabilityWarning] = useState(() => getCapabilityWarning())
+  const [bubbleHintClosing, setBubbleHintClosing] = useState(false)
+  const bubbleHintTimerRef = useRef<number | null>(null)
+  const [bubbleDebugEnabled, setBubbleDebugEnabled] = useState(false)
+  const [bubblePanelOpen, setBubblePanelOpen] = useState(false)
+  const [bubbleTuning, setBubbleTuning] = useState<BubbleverseTuning>(
+    () => ({ ...DEFAULT_BUBBLEVERSE_TUNING }),
+  )
 
   const clearRecordingTimers = () => {
     if (countdownTimerRef.current !== null) window.clearInterval(countdownTimerRef.current)
@@ -75,6 +118,17 @@ function PlayPage() {
     countdownTimerRef.current = null
     recordingTimerRef.current = null
     recordingLimitTimerRef.current = null
+  }
+
+  const showTutorialIfNeeded = () => {
+    let completed = false
+    try { completed = window.localStorage.getItem(tutorialKey) === '1' } catch { /* Optional memory. */ }
+    if (!completed) setCoachStep(0)
+  }
+
+  const completeTutorial = () => {
+    setCoachStep(null)
+    try { window.localStorage.setItem(tutorialKey, '1') } catch { /* Optional memory. */ }
   }
 
   useEffect(() => {
@@ -87,39 +141,105 @@ function PlayPage() {
       exportAbortControllerRef.current = null
       clearRecordingTimers()
       if (gestureTipTimerRef.current !== null) window.clearTimeout(gestureTipTimerRef.current)
+      if (bubbleHintTimerRef.current !== null) window.clearTimeout(bubbleHintTimerRef.current)
+      performanceMonitorRef.current?.destroy()
+      if (performanceFrameRef.current !== null) cancelAnimationFrame(performanceFrameRef.current)
       void recordingService.destroy()
       void handTrackingServiceRef.current?.destroy()
       handTrackingServiceRef.current = null
       curtainEffectRef.current?.destroy()
       curtainEffectRef.current = null
+      bubbleverseEffectRef.current?.destroy()
+      bubbleverseEffectRef.current = null
+      realityRiftEffectRef.current?.destroy()
+      realityRiftEffectRef.current = null
       cameraService.stop()
     }
   }, [])
 
   useEffect(() => {
-    if (!import.meta.env.DEV) return
-    let frameId = 0
-    let lastReport = performance.now()
+    const applyQuality = (quality: QualityLevel) => {
+      qualityRef.current = quality
+      curtainEffectRef.current?.setQuality(quality)
+      bubbleverseEffectRef.current?.setQuality(quality)
+      realityRiftEffectRef.current?.setQuality(quality)
+    }
+    const monitor = new PerformanceMonitor({
+      effectName,
+      getCanvas: () => canvasRef.current,
+      onQualityChange: applyQuality,
+    })
+    performanceMonitorRef.current = monitor
+    monitor.start()
     const countFrame = () => {
-      performanceRef.current.frames += 1
-      frameId = requestAnimationFrame(countFrame)
+      monitor.frame()
+      performanceFrameRef.current = requestAnimationFrame(countFrame)
     }
-    frameId = requestAnimationFrame(countFrame)
-    const reportTimer = window.setInterval(() => {
-      const now = performance.now()
-      const seconds = (now - lastReport) / 1000
-      const fps = performanceRef.current.frames / seconds
-      const handHz = performanceRef.current.inferences / seconds
-      console.debug(`[Vibe Effects] FPS ${fps.toFixed(1)} · Hands ${handHz.toFixed(1)} Hz`)
-      performanceRef.current.frames = 0
-      performanceRef.current.inferences = 0
-      lastReport = now
-    }, 5000)
+    performanceFrameRef.current = requestAnimationFrame(countFrame)
     return () => {
-      cancelAnimationFrame(frameId)
-      window.clearInterval(reportTimer)
+      monitor.destroy()
+      if (performanceFrameRef.current !== null) cancelAnimationFrame(performanceFrameRef.current)
+      performanceMonitorRef.current = null
+      performanceFrameRef.current = null
     }
-  }, [])
+  }, [effectName])
+
+  useEffect(() => {
+    const handleVisibility = () => {
+      const paused = document.hidden
+      curtainEffectRef.current?.setPaused(paused)
+      bubbleverseEffectRef.current?.setPaused(paused)
+      realityRiftEffectRef.current?.setPaused(paused)
+      if (paused) handTrackingServiceRef.current?.pause()
+      else if (cameraServiceRef.current.isActive) handTrackingServiceRef.current?.resume()
+      else if (status === 'active' || status === 'switching') {
+        setCameraPaused(true)
+        setStatus('idle')
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => document.removeEventListener('visibilitychange', handleVisibility)
+  }, [status])
+
+  useEffect(() => {
+    if (status !== 'requesting') { setShowPermissionReminder(false); return }
+    const timer = window.setTimeout(() => setShowPermissionReminder(true), 5000)
+    return () => window.clearTimeout(timer)
+  }, [status])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !isBubbleverse) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select')) return
+      if (event.key.toLowerCase() === 'd') {
+        setBubbleDebugEnabled((enabled) => {
+          bubbleverseEffectRef.current?.setDebugEnabled(!enabled)
+          return !enabled
+        })
+      }
+      if (event.key.toLowerCase() === 'p') setBubblePanelOpen((open) => !open)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isBubbleverse])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV || !isRealityRift) return
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select')) return
+      if (event.key.toLowerCase() === 'd') {
+        setRiftDebugEnabled((enabled) => {
+          realityRiftEffectRef.current?.setDebugEnabled(!enabled)
+          return !enabled
+        })
+      }
+      if (event.key.toLowerCase() === 'p') setRiftPanelOpen((open) => !open)
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isRealityRift])
 
   const markFirstHandGrab = () => {
     setShowGestureTip(false)
@@ -128,22 +248,83 @@ function PlayPage() {
     try { window.localStorage.setItem(GESTURE_TIP_KEY, '1') } catch { /* Optional hint memory. */ }
   }
 
+  const dismissBubbleHint = (type?: 'pop' | 'push') => {
+    if (type === 'pop') {
+      bubbleTutorialPopRef.current = true
+      setCoachStep(1)
+    }
+    if (type === 'push' && bubbleTutorialPopRef.current) completeTutorial()
+    if (!showBubbleHint || bubbleHintClosing) return
+    setBubbleHintClosing(true)
+    bubbleHintTimerRef.current = window.setTimeout(() => {
+      setShowBubbleHint(false)
+      setBubbleHintClosing(false)
+      bubbleHintTimerRef.current = null
+    }, 360)
+  }
+
+  const dismissRiftHint = () => {
+    setShowRiftHint(false)
+    completeTutorial()
+  }
+
+  const handleRiftGrabState = (state: 'idle' | 'armed' | 'dual_locked' | 'closing') => {
+    setRiftGrabState(state)
+    if (state === 'dual_locked') setCoachStep(1)
+  }
+
+  const handleCurtainGrab = () => {
+    markFirstHandGrab()
+    setCoachStep(1)
+  }
+
+  const replayTutorial = () => {
+    setCoachStep(0)
+    window.setTimeout(() => mountedRef.current && setCoachStep(1), 1600)
+    window.setTimeout(() => mountedRef.current && setCoachStep(null), 3400)
+  }
+
+  const updateRiftParameter = (key: keyof RealityRiftTuning, value: number) => {
+    setRiftTuning((current) => {
+      const next = { ...current, [key]: value }
+      realityRiftEffectRef.current?.updateTuning(next)
+      return next
+    })
+  }
+
+  const updateBubbleParameter = (key: keyof BubbleverseTuning, value: number) => {
+    setBubbleTuning((current) => {
+      const next = { ...current, [key]: value }
+      bubbleverseEffectRef.current?.updateTuning(next)
+      return next
+    })
+  }
+
+  const applyBubblePreset = (preset: keyof typeof BUBBLEVERSE_PRESETS) => {
+    const next = { ...BUBBLEVERSE_PRESETS[preset] }
+    setBubbleTuning(next)
+    bubbleverseEffectRef.current?.updateTuning(next)
+  }
+
   const startHandTracking = async (
     video: HTMLVideoElement,
     activeFacingMode: CameraFacingMode,
   ) => {
+    await handTrackingServiceRef.current?.destroy()
     const handTrackingService = new HandTrackingService()
     handTrackingServiceRef.current = handTrackingService
 
     try {
       await handTrackingService.start(video, activeFacingMode, {
         onHands: (hands) => {
-          performanceRef.current.inferences += 1
+          performanceMonitorRef.current?.handInference()
           curtainEffectRef.current?.setHands(hands)
+          bubbleverseEffectRef.current?.setHands(hands)
+          realityRiftEffectRef.current?.setHands(hands)
         },
         onError: () => {
           if (mountedRef.current && handTrackingServiceRef.current === handTrackingService) {
-            setHandTrackingWarning('手势识别暂不可用，你仍然可以使用鼠标或触摸操作。')
+            setHandTrackingWarning('手势识别暂时无法加载，你仍然可以使用鼠标或触摸操作。')
           }
         },
       })
@@ -155,7 +336,7 @@ function PlayPage() {
         await handTrackingService.destroy()
         handTrackingServiceRef.current = null
         if (mountedRef.current) {
-          setHandTrackingWarning('手势识别暂不可用，你仍然可以使用鼠标或触摸操作。')
+          setHandTrackingWarning('手势识别暂时无法加载，你仍然可以使用鼠标或触摸操作。')
         }
       }
     }
@@ -165,25 +346,57 @@ function PlayPage() {
     if (!videoRef.current) return
 
     setStatus('requesting')
+    setCameraPaused(false)
     setCameraError(null)
 
     try {
       const activeFacingMode = await cameraServiceRef.current.start(videoRef.current, 'user')
-      if (canvasRef.current) {
+      if (canvasRef.current && isBubbleverse) {
+        bubbleverseEffectRef.current?.destroy()
+        bubbleverseEffectRef.current = new BubbleverseEffect(
+          canvasRef.current,
+          videoRef.current,
+          activeFacingMode,
+          dismissBubbleHint,
+        )
+        bubbleverseEffectRef.current.updateTuning(bubbleTuning)
+        bubbleverseEffectRef.current.setDebugEnabled(bubbleDebugEnabled)
+        bubbleverseEffectRef.current.setQuality(qualityRef.current)
+      } else if (canvasRef.current && isRealityRift) {
+        realityRiftEffectRef.current?.destroy()
+        realityRiftEffectRef.current = new RealityRiftEffect(
+          canvasRef.current,
+          videoRef.current,
+          activeFacingMode,
+          dismissRiftHint,
+          handleRiftGrabState,
+        )
+        realityRiftEffectRef.current.updateTuning(riftTuning)
+        realityRiftEffectRef.current.setDebugEnabled(riftDebugEnabled)
+        realityRiftEffectRef.current.setQuality(qualityRef.current)
+      } else if (canvasRef.current) {
         curtainEffectRef.current?.destroy()
         curtainEffectRef.current = new InvisibleCurtainEffect(
           canvasRef.current,
           videoRef.current,
           activeFacingMode,
-          markFirstHandGrab,
+          handleCurtainGrab,
+          completeTutorial,
         )
+        curtainEffectRef.current.setQuality(qualityRef.current)
       }
       setFacingMode(activeFacingMode)
       setStatus('active')
-      let hasGrabbedBefore = false
-      try { hasGrabbedBefore = window.localStorage.getItem(GESTURE_TIP_KEY) === '1' } catch { /* Optional hint memory. */ }
-      if (!hasGrabbedBefore) {
-        gestureTipTimerRef.current = window.setTimeout(() => setShowGestureTip(true), 6500)
+      if (import.meta.env.DEV) {
+        console.debug(`[Vibe Effects] Camera: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`)
+      }
+      showTutorialIfNeeded()
+      if (isInvisibleCurtain) {
+        let hasGrabbedBefore = false
+        try { hasGrabbedBefore = window.localStorage.getItem(GESTURE_TIP_KEY) === '1' } catch { /* Optional hint memory. */ }
+        if (!hasGrabbedBefore) {
+          gestureTipTimerRef.current = window.setTimeout(() => setShowGestureTip(true), 6500)
+        }
       }
       void startHandTracking(videoRef.current, activeFacingMode)
     } catch (error) {
@@ -191,9 +404,48 @@ function PlayPage() {
       handTrackingServiceRef.current = null
       curtainEffectRef.current?.destroy()
       curtainEffectRef.current = null
+      bubbleverseEffectRef.current?.destroy()
+      bubbleverseEffectRef.current = null
+      realityRiftEffectRef.current?.destroy()
+      realityRiftEffectRef.current = null
       setCameraError(error instanceof CameraServiceError ? error.code : 'start-failed')
       setStatus('error')
     }
+  }
+
+  const startBubbleverseMousePreview = () => {
+    if (!isBubbleverse || !canvasRef.current || !videoRef.current) return
+    bubbleverseEffectRef.current?.destroy()
+    bubbleverseEffectRef.current = new BubbleverseEffect(
+      canvasRef.current,
+      videoRef.current,
+      'user',
+      dismissBubbleHint,
+    )
+    bubbleverseEffectRef.current.updateTuning(bubbleTuning)
+    bubbleverseEffectRef.current.setDebugEnabled(bubbleDebugEnabled)
+    bubbleverseEffectRef.current.setQuality(qualityRef.current)
+    setFacingMode('user')
+    setCameraError(null)
+    setStatus('active')
+  }
+
+  const startRealityRiftMousePreview = () => {
+    if (!isRealityRift || !canvasRef.current || !videoRef.current) return
+    realityRiftEffectRef.current?.destroy()
+    realityRiftEffectRef.current = new RealityRiftEffect(
+      canvasRef.current,
+      videoRef.current,
+      'user',
+      dismissRiftHint,
+      handleRiftGrabState,
+    )
+    realityRiftEffectRef.current.updateTuning(riftTuning)
+    realityRiftEffectRef.current.setDebugEnabled(riftDebugEnabled)
+    realityRiftEffectRef.current.setQuality(qualityRef.current)
+    setFacingMode('user')
+    setCameraError(null)
+    setStatus('active')
   }
 
   const switchCamera = async () => {
@@ -207,12 +459,18 @@ function PlayPage() {
     try {
       const activeFacingMode = await cameraServiceRef.current.switchCamera(videoRef.current)
       curtainEffectRef.current?.setFacingMode(activeFacingMode)
+      bubbleverseEffectRef.current?.setFacingMode(activeFacingMode)
+      realityRiftEffectRef.current?.setFacingMode(activeFacingMode)
       setFacingMode(activeFacingMode)
       setStatus('active')
       void startHandTracking(videoRef.current, activeFacingMode)
     } catch (error) {
       curtainEffectRef.current?.destroy()
       curtainEffectRef.current = null
+      bubbleverseEffectRef.current?.destroy()
+      bubbleverseEffectRef.current = null
+      realityRiftEffectRef.current?.destroy()
+      realityRiftEffectRef.current = null
       setCameraError(error instanceof CameraServiceError ? error.code : 'start-failed')
       setStatus('error')
     }
@@ -227,6 +485,10 @@ function PlayPage() {
     handTrackingServiceRef.current = null
     curtainEffectRef.current?.destroy()
     curtainEffectRef.current = null
+    bubbleverseEffectRef.current?.destroy()
+    bubbleverseEffectRef.current = null
+    realityRiftEffectRef.current?.destroy()
+    realityRiftEffectRef.current = null
     cameraServiceRef.current.stop()
     navigate('/explore')
   }
@@ -333,6 +595,11 @@ function PlayPage() {
     setExportProgress(0)
     setExportMessage(null)
     const abortController = new AbortController()
+    let exportTimedOut = false
+    const exportTimeout = window.setTimeout(() => {
+      exportTimedOut = true
+      abortController.abort()
+    }, 120_000)
     exportAbortControllerRef.current = abortController
 
     try {
@@ -340,7 +607,8 @@ function PlayPage() {
         recordingResult.mimeType.includes('mp4') &&
         await isMp4Blob(recordingResult.blob)
       ) {
-        downloadBlob(recordingResult.blob, createRecordingFilename('mp4'))
+        downloadBlob(recordingResult.blob, createRecordingFilename('mp4', isBubbleverse, isRealityRift))
+        setExportMessage('视频已保存')
       } else {
         const mp4 = await convertWebMToMp4(
           recordingResult.blob,
@@ -349,14 +617,16 @@ function PlayPage() {
           },
           abortController.signal,
         )
-        downloadBlob(mp4, createRecordingFilename('mp4'))
+        downloadBlob(mp4, createRecordingFilename('mp4', isBubbleverse, isRealityRift))
+        setExportMessage('视频已保存')
       }
     } catch {
-      if (!abortController.signal.aborted) {
-        recordingServiceRef.current.download(createRecordingFilename('webm'))
-        setExportMessage('MP4 生成失败，你仍然可以保存原始视频。')
+      if (!abortController.signal.aborted || exportTimedOut) {
+        recordingServiceRef.current.download(createRecordingFilename('webm', isBubbleverse, isRealityRift))
+        setExportMessage('MP4 生成失败，已保留原始视频')
       }
     } finally {
+      window.clearTimeout(exportTimeout)
       if (exportAbortControllerRef.current === abortController) {
         exportAbortControllerRef.current = null
       }
@@ -366,12 +636,15 @@ function PlayPage() {
 
   const uploadMedia = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
-    if (!file || !curtainEffectRef.current) return
+    const mediaEffect = isRealityRift ? realityRiftEffectRef.current : curtainEffectRef.current
+    if (!file || !mediaEffect) return
 
     setMediaError(null)
     try {
-      await curtainEffectRef.current.setMedia(file)
+      await mediaEffect.setMedia(file)
       setHasUploadedMedia(true)
+      setMediaToast(true)
+      window.setTimeout(() => mountedRef.current && setMediaToast(false), 1500)
     } catch {
       setHasUploadedMedia(false)
       setMediaError('这个文件暂时无法使用，请换一个试试。')
@@ -388,7 +661,7 @@ function PlayPage() {
     recordingStatus === 'stopping'
 
   return (
-    <main className="play-page">
+    <main className={`play-page ${isBubbleverse ? 'bubbleverse-page' : ''} ${isRealityRift ? 'reality-rift-page' : ''} ${recordingStatus === 'recording' || recordingStatus === 'stopping' ? 'play-page-recording' : ''}`}>
       <video
         ref={videoRef}
         className={`camera-feed ${facingMode === 'user' ? 'camera-feed-mirrored' : ''}`}
@@ -400,7 +673,7 @@ function PlayPage() {
       <canvas
         ref={canvasRef}
         className={`curtain-canvas ${status === 'active' || status === 'switching' ? 'curtain-canvas-active' : ''}`}
-        aria-label="可拖动的透明幕布互动区域"
+        aria-label={isBubbleverse ? '可交互的泡泡宇宙画面' : isRealityRift ? '可用双手撕开的空间裂缝画面' : '可拖动的透明幕布互动区域'}
       />
       <div className="camera-shade" aria-hidden="true" />
 
@@ -408,25 +681,33 @@ function PlayPage() {
         <button className="play-text-button" type="button" onClick={requestExit}>
           <span aria-hidden="true">←</span> 返回
         </button>
-        <p>透明幕布</p>
+        <p>{effectName}</p>
       </header>
 
       {status === 'idle' && (
         <section className="camera-dialog" aria-labelledby="camera-permission-title">
           <p className="dialog-index">摄像头 / 01</p>
-          <h1 id="camera-permission-title">开启摄像头</h1>
+          <h1 id="camera-permission-title">{cameraPaused ? '摄像头已暂停' : '开启摄像头'}</h1>
           <p className="dialog-copy">
-            Vibe Effects 需要使用摄像头，<br />才能让你的动作参与互动。
+            {cameraPaused
+              ? '摄像头连接已被系统暂停，请重新开启。'
+              : 'Vibe Effects 需要使用摄像头，才能让你的动作参与互动。'}
           </p>
-          <ol className="quick-start" aria-label="透明幕布玩法步骤">
-            <li><span>1</span>开启摄像头</li>
-            <li><span>2</span>上传一张图片或视频</li>
-            <li><span>3</span>拇指和食指捏合，抓住幕布</li>
-            <li><span>4</span>向上甩开它</li>
-          </ol>
+          {!cameraPaused && <p className="play-intro-line">{getPreflightCopy(effectId)}</p>}
+          {capabilityWarning && <p className="capability-warning">当前浏览器可能无法完整运行 Vibe Effects。<br />建议使用最新版 Chrome 或 Edge。</p>}
           <button className="camera-primary-button" type="button" onClick={startCamera}>
-            开启摄像头 <span aria-hidden="true">↗</span>
+            {cameraPaused ? '重新开启' : '开启摄像头'} <span aria-hidden="true">↗</span>
           </button>
+          {import.meta.env.DEV && isBubbleverse && (
+            <button className="dev-preview-button" type="button" onClick={startBubbleverseMousePreview}>
+              鼠标预览（开发）
+            </button>
+          )}
+          {import.meta.env.DEV && isRealityRift && (
+            <button className="dev-preview-button" type="button" onClick={startRealityRiftMousePreview}>
+              鼠标预览（开发）
+            </button>
+          )}
           <p className="privacy-note">视频画面仅在你的浏览器中处理。</p>
         </section>
       )}
@@ -435,7 +716,7 @@ function PlayPage() {
         <section className="camera-dialog camera-loading" aria-live="polite">
           <span className="loading-mark" aria-hidden="true" />
           <h1>正在开启摄像头</h1>
-          <p className="dialog-copy">请在浏览器提示中允许摄像头权限。</p>
+          <p className="dialog-copy">{showPermissionReminder ? '请允许摄像头权限' : '正在启动摄像头…'}</p>
         </section>
       )}
 
@@ -444,8 +725,8 @@ function PlayPage() {
           <p className="dialog-index">摄像头 / 错误</p>
           <h1>{activeError.title}</h1>
           {activeError.description && <p className="dialog-copy">{activeError.description}</p>}
-          <button className="camera-primary-button" type="button" onClick={exitExperience}>
-            返回玩法 <span aria-hidden="true">→</span>
+          <button className="camera-primary-button" type="button" onClick={startCamera}>
+            重新尝试 <span aria-hidden="true">↗</span>
           </button>
         </section>
       )}
@@ -455,28 +736,37 @@ function PlayPage() {
           {handTrackingWarning && (
             <p className="hand-tracking-warning" role="status">{handTrackingWarning}</p>
           )}
-          {showGestureTip && !handTrackingWarning && (
-            <p className="gesture-tip" role="status">试试用拇指和食指捏住幕布</p>
-          )}
           {recordingError && (
             <p className="recording-error" role="alert">{recordingError}</p>
           )}
-          {!hasUploadedMedia && (
-            <p className="media-hint">{mediaError ?? '上传图片或视频，藏在幕布后面'}</p>
+          {coachStep !== null && (
+            <div className="gesture-coach" role="status">
+              <span aria-hidden="true">{getCoachContent(effectId, coachStep).symbol}</span>
+              <p>{getCoachContent(effectId, coachStep).text}</p>
+            </div>
           )}
-          <input
+          <button className="play-help-button" type="button" aria-label="重新查看玩法提示" onClick={replayTutorial}>?</button>
+          {mediaToast && <p className="media-loaded-toast" role="status">素材已加载</p>}
+          {!isBubbleverse && !hasUploadedMedia && (
+            <p className="media-hint">{mediaError ?? (isRealityRift ? '先选择裂缝另一边的世界' : '上传图片或视频，藏在幕布后面')}</p>
+          )}
+          {!isBubbleverse && <input
             ref={mediaInputRef}
             className="media-input"
             type="file"
             accept="image/*,video/mp4,video/webm,video/quicktime"
             onChange={uploadMedia}
-          />
+          />}
           <div className="play-controls" aria-label="体验控制栏">
-            <button className={!hasUploadedMedia ? 'upload-control-primary' : undefined} type="button" onClick={() => mediaInputRef.current?.click()} disabled={controlsLocked}>
-              <span className="control-icon control-icon-upload" aria-hidden="true">＋</span>
-              {hasUploadedMedia ? '更换素材' : '上传素材'}
-            </button>
-            <span className="control-divider" aria-hidden="true" />
+            {!isBubbleverse && <>
+              <button className={!hasUploadedMedia ? 'upload-control-primary' : undefined} type="button" onClick={() => mediaInputRef.current?.click()} disabled={controlsLocked}>
+                <span className="control-icon control-icon-upload" aria-hidden="true">＋</span>
+                {isRealityRift
+                  ? hasUploadedMedia ? '更换另一个世界' : '选择另一个世界'
+                  : hasUploadedMedia ? '更换素材' : '选择隐藏素材'}
+              </button>
+              <span className="control-divider" aria-hidden="true" />
+            </>}
             <button type="button" onClick={switchCamera} disabled={controlsLocked}>
               <span className="control-icon" aria-hidden="true">↻</span>
               {status === 'switching' ? '正在切换' : '翻转镜头'}
@@ -521,15 +811,62 @@ function PlayPage() {
             </div>
             <video src={recordingResult.url} controls playsInline autoPlay />
             <div className="preview-actions">
-              <button type="button" onClick={closePreview} disabled={exportingMp4}>重新录制</button>
+              <button type="button" onClick={closePreview} disabled={exportingMp4}>再录一次</button>
               <button className="preview-save-button" type="button" onClick={saveRecording} disabled={exportingMp4}>
                 {exportingMp4 ? `正在生成 MP4… ${Math.round(exportProgress * 100)}%` : '保存 MP4'}
               </button>
-              <button type="button" onClick={closePreview} disabled={exportingMp4}>继续体验</button>
+              <button type="button" onClick={closePreview} disabled={exportingMp4}>返回玩法</button>
             </div>
             {exportMessage && <p className="export-message" role="status">{exportMessage}</p>}
+            {exportMessage === '视频已保存' && (
+              <button className="preview-explore-button" type="button" onClick={() => navigate('/explore')}>试试其他玩法</button>
+            )}
           </div>
         </section>
+      )}
+
+      {import.meta.env.DEV && isBubbleverse && bubblePanelOpen && (
+        <aside className="bubble-dev-panel" aria-label="Bubbleverse 参数调节">
+          <div>
+            <strong>Bubbleverse Interaction</strong>
+            <span>D 调试 · P 关闭</span>
+          </div>
+          <div className="bubble-presets">
+            <span>Sensitivity Preset</span>
+            <button type="button" onClick={() => applyBubblePreset('soft')}>Soft</button>
+            <button type="button" onClick={() => applyBubblePreset('normal')}>Normal</button>
+            <button type="button" onClick={() => applyBubblePreset('strong')}>Strong</button>
+            <button type="button" onClick={() => applyBubblePreset('normal')}>Reset</button>
+          </div>
+          {BUBBLE_TUNING_CONTROLS.map((control) => (
+            <label key={control.key}>
+              <span>{control.label}</span>
+              <input
+                type="range"
+                min={control.min}
+                max={control.max}
+                step={control.step}
+                value={bubbleTuning[control.key]}
+                onChange={(event) => updateBubbleParameter(control.key, Number(event.target.value))}
+              />
+              <output>{bubbleTuning[control.key]}</output>
+            </label>
+          ))}
+        </aside>
+      )}
+
+      {import.meta.env.DEV && isRealityRift && riftPanelOpen && (
+        <aside className="bubble-dev-panel rift-dev-panel" aria-label="Reality Rift 参数调节">
+          <div><strong>Reality Rift Interaction</strong><span>D 调试 · P 关闭</span></div>
+          {RIFT_TUNING_CONTROLS.map((control) => (
+            <label key={control.key}>
+              <span>{control.label}</span>
+              <input type="range" min={control.min} max={control.max} step={control.step} value={riftTuning[control.key]}
+                onChange={(event) => updateRiftParameter(control.key, Number(event.target.value))} />
+              <output>{riftTuning[control.key]}</output>
+            </label>
+          ))}
+        </aside>
       )}
 
       {exitConfirmationOpen && (
@@ -548,18 +885,82 @@ function PlayPage() {
   )
 }
 
+const BUBBLE_TUNING_CONTROLS: Array<{
+  key: keyof BubbleverseTuning
+  label: string
+  min: number
+  max: number
+  step: number
+}> = [
+  { key: 'popHitPadding', label: 'POP hit padding', min: 0, max: 80, step: 1 },
+  { key: 'touchRadius', label: 'Touch radius', min: 20, max: 140, step: 2 },
+  { key: 'palmRadius', label: 'Palm radius', min: 1.5, max: 3.5, step: .05 },
+  { key: 'palmPushGain', label: 'Palm push gain', min: .3, max: 2.8, step: .05 },
+  { key: 'sweepRadius', label: 'Sweep radius', min: .06, max: .22, step: .005 },
+  { key: 'sweepGain', label: 'Sweep gain', min: .3, max: 3.2, step: .05 },
+  { key: 'swipeBonus', label: 'Swipe bonus', min: .5, max: 4.5, step: .05 },
+  { key: 'bubbleDrag', label: 'Bubble drag', min: .96, max: .999, step: .001 },
+]
+
+const RIFT_TUNING_CONTROLS: Array<{ key: keyof RealityRiftTuning; label: string; min: number; max: number; step: number }> = [
+  { key: 'grabTriggerMultiplier', label: 'Grab Trigger', min: .8, max: 2, step: .02 },
+  { key: 'grabReleaseMultiplier', label: 'Grab Release', min: 1.5, max: 3.5, step: .05 },
+  { key: 'trackingGracePeriod', label: 'Tracking Grace', min: 250, max: 900, step: 10 },
+  { key: 'handSmoothing', label: 'Position Smoothing', min: .02, max: .4, step: .01 },
+  { key: 'edgeFollowStrength', label: 'Edge Follow Strength', min: .5, max: 1, step: .01 },
+  { key: 'openingGain', label: 'Opening Gain', min: .5, max: 1.2, step: .01 },
+  { key: 'minimumOpening', label: 'Minimum Opening', min: 4, max: 40, step: 1 },
+  { key: 'maxRiftWidth', label: 'Max rift width', min: .4, max: .9, step: .01 },
+  { key: 'heightGain', label: 'Height Gain', min: .6, max: 1.3, step: .01 },
+  { key: 'dualGrabWindow', label: 'Dual grab window (ms)', min: 600, max: 2000, step: 50 },
+  { key: 'riftDamping', label: 'Rift damping', min: .12, max: .6, step: .01 },
+  { key: 'stretchStrength', label: 'Stretch strength', min: 0, max: 2.5, step: .05 },
+  { key: 'glowStrength', label: 'Glow strength', min: 0, max: 2.5, step: .05 },
+]
+
 function formatRecordingTime(seconds: number) {
   const minutes = Math.floor(seconds / 60).toString().padStart(2, '0')
   const remainingSeconds = (seconds % 60).toString().padStart(2, '0')
   return `${minutes}:${remainingSeconds}`
 }
 
-function createRecordingFilename(extension: 'webm' | 'mp4') {
+function getCoachContent(effectId: string, step: 0 | 1) {
+  if (effectId === 'bubbleverse') {
+    return step === 0
+      ? { symbol: '☝', text: '用食指戳破泡泡' }
+      : { symbol: '✋', text: '挥动手掌试试看' }
+  }
+  if (effectId === 'reality-rift') {
+    return step === 0
+      ? { symbol: '🤏  🤏', text: '双手捏住现实' }
+      : { symbol: '←   →', text: '向两边撕开' }
+  }
+  return step === 0
+    ? { symbol: '🤏', text: '捏住幕布' }
+    : { symbol: '↕', text: '拖动它，看看后面藏着什么' }
+}
+
+function getPreflightCopy(effectId: string) {
+  if (effectId === 'bubbleverse') return '伸手触碰、戳破或挥开泡泡。'
+  if (effectId === 'reality-rift') return '用双手捏住现实，再向两边撕开。'
+  return '用双手捏住幕布，再把它掀开。'
+}
+
+function getCapabilityWarning() {
+  const canvas = document.createElement('canvas')
+  return !navigator.mediaDevices?.getUserMedia ||
+    typeof MediaRecorder === 'undefined' ||
+    typeof canvas.captureStream !== 'function' ||
+    typeof WebAssembly === 'undefined'
+}
+
+function createRecordingFilename(extension: 'webm' | 'mp4', isBubbleverse: boolean, isRealityRift: boolean) {
   const now = new Date()
   const pad = (value: number) => value.toString().padStart(2, '0')
   const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
   const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
-  return `vibe-effects-invisible-curtain-${date}-${time}.${extension}`
+  const effectSlug = isBubbleverse ? 'bubbleverse' : isRealityRift ? 'reality-rift' : 'invisible-curtain'
+  return `vibe-effects-${effectSlug}-${date}-${time}.${extension}`
 }
 
 export default PlayPage

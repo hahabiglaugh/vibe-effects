@@ -25,6 +25,10 @@ export class CameraService {
     return this.facingMode
   }
 
+  get isActive() {
+    return this.stream?.getVideoTracks().some((track) => track.readyState === 'live') ?? false
+  }
+
   async start(
     videoElement: HTMLVideoElement,
     facingMode: CameraFacingMode = 'user',
@@ -42,14 +46,30 @@ export class CameraService {
         ? { exact: facingMode }
         : { ideal: facingMode }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const isMobile = matchMedia('(pointer: coarse)').matches
+      const cameraRequest = navigator.mediaDevices.getUserMedia({
         audio: false,
         video: {
           facingMode: facingConstraint,
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          width: { ideal: isMobile ? 960 : 1280 },
+          height: { ideal: isMobile ? 540 : 720 },
         },
       })
+      let requestTimedOut = false
+      cameraRequest.then((lateStream) => {
+        if (requestTimedOut) lateStream.getTracks().forEach((track) => track.stop())
+      }).catch(() => { /* The awaited request handles this error. */ })
+      let timeoutId: number | undefined
+      const stream = await Promise.race([
+        cameraRequest,
+        new Promise<never>((_, reject) => {
+          timeoutId = window.setTimeout(() => {
+            requestTimedOut = true
+            reject(new CameraServiceError('start-failed', '摄像头启动超时。'))
+          }, 30_000)
+        }),
+      ])
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId)
 
       if (generation !== this.generation) {
         stream.getTracks().forEach((track) => track.stop())

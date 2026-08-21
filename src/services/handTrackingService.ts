@@ -27,13 +27,18 @@ function loadMediaPipeHands() {
 
   mediaPipeLoader = new Promise<MediaPipeHandsConstructor>((resolve, reject) => {
     const script = document.createElement('script')
+    const timeout = window.setTimeout(() => reject(new Error('MediaPipe Hands load timed out.')), 15_000)
     script.src = MEDIAPIPE_HANDS_SCRIPT
     script.crossOrigin = 'anonymous'
     script.onload = () => {
+      window.clearTimeout(timeout)
       if (window.Hands) resolve(window.Hands)
       else reject(new Error('MediaPipe Hands did not initialize.'))
     }
-    script.onerror = () => reject(new Error('MediaPipe Hands failed to load.'))
+    script.onerror = () => {
+      window.clearTimeout(timeout)
+      reject(new Error('MediaPipe Hands failed to load.'))
+    }
     document.head.appendChild(script)
   }).catch((error) => {
     mediaPipeLoader = null
@@ -55,10 +60,27 @@ export type TrackedHand = {
   justStartedPinching: boolean
   x: number
   y: number
+  indexX: number
+  indexY: number
+  previousIndexX: number
+  previousIndexY: number
+  palmCenter: HandPoint
+  palmX: number
+  palmY: number
+  previousPalmX: number
+  previousPalmY: number
+  velocityX: number
+  velocityY: number
+  speed: number
+  palmRadius: number
+  trackingDeltaMs: number
   landmarks: NormalizedLandmarkList
 }
 
-type PreviousHand = Pick<TrackedHand, 'id' | 'x' | 'y' | 'isPinching'>
+type PreviousHand = Pick<
+  TrackedHand,
+  'id' | 'x' | 'y' | 'isPinching' | 'indexX' | 'indexY' | 'palmX' | 'palmY' | 'velocityX' | 'velocityY'
+> & { updatedAt: number }
 
 type HandTrackingCallbacks = {
   onHands: (hands: TrackedHand[]) => void
@@ -66,6 +88,9 @@ type HandTrackingCallbacks = {
 }
 
 const PREVIOUS_HAND_MATCH_RADIUS = 200
+const PALM_POSITION_SMOOTHING = 0.55
+const PALM_VELOCITY_SMOOTHING = 0.42
+const PALM_LANDMARKS = [0, 5, 9, 13, 17]
 
 export class HandTrackingService {
   private hands: MediaPipeHands | null = null
@@ -114,7 +139,13 @@ export class HandTrackingService {
     hands.onResults(this.handleResults)
 
     this.hands = hands
-    await hands.initialize()
+    await Promise.race([
+      hands.initialize(),
+      new Promise<never>((_, reject) => window.setTimeout(
+        () => reject(new Error('MediaPipe Hands initialization timed out.')),
+        20_000,
+      )),
+    ])
 
     if (this.hands !== hands) {
       await hands.close()
@@ -159,6 +190,19 @@ export class HandTrackingService {
     this.lastVideoTime = -1
   }
 
+  pause() {
+    this.running = false
+    if (this.animationFrame !== null) cancelAnimationFrame(this.animationFrame)
+    this.animationFrame = null
+  }
+
+  resume() {
+    if (this.running || !this.hands || !this.video) return
+    this.running = true
+    this.lastVideoTime = -1
+    this.processNextFrame()
+  }
+
   private processNextFrame = () => {
     if (!this.running) return
 
@@ -190,6 +234,7 @@ export class HandTrackingService {
   private handleResults = (results: Results) => {
     if (!this.running || !this.video) return
 
+    const now = performance.now()
     const usedPreviousHands = new Set<number>()
     const nextHands: TrackedHand[] = results.multiHandLandmarks
       .slice(0, 2)
@@ -206,11 +251,56 @@ export class HandTrackingService {
           z: (thumbTip.z + indexTip.z) / 2,
         }
         const screenPosition = this.toScreenPosition(pinchCenter)
+        const indexScreenPosition = this.toScreenPosition(indexTip)
         const previousHand = this.findPreviousHand(screenPosition.x, screenPosition.y, usedPreviousHands)
         if (previousHand) usedPreviousHands.add(previousHand.id)
 
         const wasPinching = previousHand?.isPinching ?? false
         const isPinching = pinchDistance < (wasPinching ? 0.08 : 0.05)
+        const palmCenter = PALM_LANDMARKS.reduce(
+          (center, index) => {
+            center.x += landmarks[index].x / PALM_LANDMARKS.length
+            center.y += landmarks[index].y / PALM_LANDMARKS.length
+            center.z += landmarks[index].z / PALM_LANDMARKS.length
+            return center
+          },
+          { x: 0, y: 0, z: 0 },
+        )
+        const rawPalmPosition = this.toScreenPosition(palmCenter)
+        const palmX = previousHand
+          ? previousHand.palmX + (rawPalmPosition.x - previousHand.palmX) * PALM_POSITION_SMOOTHING
+          : rawPalmPosition.x
+        const palmY = previousHand
+          ? previousHand.palmY + (rawPalmPosition.y - previousHand.palmY) * PALM_POSITION_SMOOTHING
+          : rawPalmPosition.y
+        const elapsedSeconds = previousHand
+          ? Math.max(.016, Math.min(.1, (now - previousHand.updatedAt) / 1000))
+          : .033
+        const rawVelocityX = previousHand ? (palmX - previousHand.palmX) / elapsedSeconds : 0
+        const rawVelocityY = previousHand ? (palmY - previousHand.palmY) / elapsedSeconds : 0
+        let velocityX = previousHand
+          ? previousHand.velocityX + (rawVelocityX - previousHand.velocityX) * PALM_VELOCITY_SMOOTHING
+          : 0
+        let velocityY = previousHand
+          ? previousHand.velocityY + (rawVelocityY - previousHand.velocityY) * PALM_VELOCITY_SMOOTHING
+          : 0
+        let speed = Math.hypot(velocityX, velocityY)
+        if (speed < 32) {
+          velocityX = 0
+          velocityY = 0
+          speed = 0
+        } else if (speed > 2400) {
+          const limit = 2400 / speed
+          velocityX *= limit
+          velocityY *= limit
+          speed = 2400
+        }
+        const palmLeft = this.toScreenPosition(landmarks[5])
+        const palmRight = this.toScreenPosition(landmarks[17])
+        const palmRadius = Math.max(64, Math.min(170, Math.hypot(
+          palmRight.x - palmLeft.x,
+          palmRight.y - palmLeft.y,
+        ) * .72))
 
         return {
           id: previousHand?.id ?? this.nextHandId++,
@@ -222,15 +312,36 @@ export class HandTrackingService {
           justStartedPinching: isPinching && !wasPinching,
           x: screenPosition.x,
           y: screenPosition.y,
+          indexX: indexScreenPosition.x,
+          indexY: indexScreenPosition.y,
+          previousIndexX: previousHand?.indexX ?? indexScreenPosition.x,
+          previousIndexY: previousHand?.indexY ?? indexScreenPosition.y,
+          palmCenter,
+          palmX,
+          palmY,
+          previousPalmX: previousHand?.palmX ?? palmX,
+          previousPalmY: previousHand?.palmY ?? palmY,
+          velocityX,
+          velocityY,
+          speed,
+          palmRadius,
+          trackingDeltaMs: elapsedSeconds * 1000,
           landmarks,
         }
       })
 
-    this.previousHands = nextHands.map(({ id, x, y, isPinching }) => ({
+    this.previousHands = nextHands.map(({ id, x, y, isPinching, indexX, indexY, palmX, palmY, velocityX, velocityY }) => ({
       id,
       x,
       y,
       isPinching,
+      indexX,
+      indexY,
+      palmX,
+      palmY,
+      velocityX,
+      velocityY,
+      updatedAt: now,
     }))
     this.callbacks?.onHands(nextHands)
   }
