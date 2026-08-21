@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Interactive Physics Curtain</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        canvas {
+            display: block;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+            background: rgba(0,0,0,0.8);
+            transition: opacity 0.5s ease;
+            color: white;
+            text-align: center;
+            padding: 20px;
+        }
+
+        #start-btn {
+            padding: 16px 32px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            background: #3b82f6;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
+            transition: transform 0.2s, background 0.2s;
+        }
+
+        #start-btn:active {
+            transform: scale(0.95);
+        }
+
+        #status-msg {
+            margin-top: 20px;
+            font-size: 14px;
+            opacity: 0.7;
+        }
+
+        .hidden {
+            opacity: 0 !important;
+            pointer-events: none;
+        }
+
+        #debug-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: #0f0;
+            font-family: monospace;
+            font-size: 12px;
+            pointer-events: none;
+            z-index: 50;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        #controls-panel {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 100;
+            align-items: flex-end;
+            transition: opacity 0.3s, pointer-events 0.3s;
+        }
+
+        .control-btn {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.15);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: background 0.3s, transform 0.2s;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .control-btn:active {
+            transform: scale(0.95);
+        }
+
+        #media-upload {
+            display: none;
+        }
+
+        .zoom-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 8px 15px;
+            border-radius: 20px;
+            color: white;
+            font-size: 12px;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        input[type=range] {
+            width: 100px;
+            accent-color: #3b82f6;
+        }
+
+        #hide-ui-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.15);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            z-index: 101;
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            transition: opacity 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .ui-hidden #controls-panel,
+        .ui-hidden #debug-info {
+            opacity: 0;
+            pointer-events: none;
+        }
+        
+        .ui-hidden #hide-ui-btn {
+            opacity: 0.3;
+        }
+        
+        .ui-hidden #hide-ui-btn:hover {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-overlay">
+        <h1>Physics Curtain</h1>
+        <p>Interact with a realistic cloth using your hands or touch.</p>
+        <button id="start-btn">Start Experience</button>
+        <p id="status-msg">Camera access is required for hand tracking.</p>
+    </div>
+
+    <div id="debug-info">Initializing...</div>
+
+    <button id="hide-ui-btn">👁️</button>
+
+    <div id="controls-panel">
+        <div class="zoom-container" id="zoom-container" style="display: none;">
+            <label for="zoom-slider">Zoom</label>
+            <input type="range" id="zoom-slider" min="0.5" max="3" step="0.05" value="1">
+        </div>
+        <button class="control-btn" id="flip-cam-btn">Flip Camera 🔄</button>
+        <label class="control-btn" for="media-upload">Upload Media 📁</label>
+        <input type="file" id="media-upload" accept="image/*,video/*">
+    </div>
+
+    <script>
+        // --- Media Upload Variables ---
+        let uploadedMediaType = 'video';
+        let uploadedImage = new Image();
+        let uploadedVideo = document.createElement('video');
+        uploadedVideo.loop = true;
+        uploadedVideo.muted = true;
+        uploadedVideo.playsInline = true;
+        uploadedVideo.src = 'tmp/m0873s5xe2kdsww8/1779528960258-1vg2hbdlvlk-IMG_1810.mp4';
+        uploadedVideo.onloadedmetadata = () => {
+            mediaSourceW = uploadedVideo.videoWidth;
+            mediaSourceH = uploadedVideo.videoHeight;
+            updateMediaDimensions();
+        };
+        uploadedVideo.play();
+        let perimeter = [];
+        let baseMediaW = 0;
+        let baseMediaH = 0;
+        let mediaSourceW = 0;
+        let mediaSourceH = 0;
+
+        // --- Global States ---
+        let mediaZoom = 1.0;
+        let isUIHidden = false;
+        let cameraFacingMode = 'user';
+
+        // --- Physics Engine Variables ---
+        let points = [];
+        let sticks = [];
+        const ITERATIONS = 12; // Lower iterations prevents rigid lock-up, allows cloth to relax
+        const GRAVITY = 0.12; // Increased gravity for faster drop
+        const FRICTION = 0.92; // Less drag for faster movement
+        const CLOTH_COLS = 38; // Denser grid for smoother curves
+        const CLOTH_ROWS = 35; // Increased height by 1/4 (28 * 1.25) to add a buffer
+        let spacingX, spacingY;
+        
+        // --- Interaction Variables ---
+        // TODO: Discussed features to implement later:
+        // 1. Dynamic shading/folds (based on stick compression)
+        // 2. Frosted glass translucency
+        // 3. Wind wake (repulsion when hand is open)
+        // 4. Tearing and healing mechanics
+        let activeHands = []; 
+        let grabbedNodes = []; 
+        let mouseGrabbedNode = null;
+        let wasMousePressed = false;
+        let ripples = []; // Store ripple effects for interaction feedback
+        let interactionRadius = 150; // Larger radius for easier grabbing
+        let isCurtainThrown = false; // Tracks if the curtain is thrown over the top
+
+        // --- MediaPipe Setup ---
+        let hands;
+        let camera;
+        let videoElement;
+        let isCameraReady = false;
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            
+            // Cloth initialization is deferred to updateMediaDimensions()
+            
+            videoElement = document.createElement('video');
+            videoElement.setAttribute('playsinline', '');
+            videoElement.style.display = 'none';
+            document.body.appendChild(videoElement);
+
+            const startBtn = document.getElementById('start-btn');
+            startBtn.addEventListener('click', () => {
+                document.getElementById('ui-overlay').classList.add('hidden');
+                initMediaPipe();
+            });
+
+            // Handle Media Upload
+            const fileInput = document.getElementById('media-upload');
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                const url = URL.createObjectURL(file);
+                document.getElementById('zoom-container').style.display = 'flex';
+                if (file.type.startsWith('video/')) {
+                    uploadedMediaType = 'video';
+                    uploadedVideo.src = url;
+                    uploadedVideo.onloadedmetadata = () => {
+                        mediaSourceW = uploadedVideo.videoWidth;
+                        mediaSourceH = uploadedVideo.videoHeight;
+                        updateMediaDimensions();
+                    };
+                    uploadedVideo.play();
+                } else if (file.type.startsWith('image/')) {
+                    uploadedMediaType = 'image';
+                    uploadedImage.onload = () => {
+                        mediaSourceW = uploadedImage.naturalWidth;
+                        mediaSourceH = uploadedImage.naturalHeight;
+                        updateMediaDimensions();
+                    };
+                    uploadedImage.src = url;
+                }
+            });
+
+            // UI Controls Events
+            document.getElementById('zoom-slider').addEventListener('input', (e) => {
+                mediaZoom = parseFloat(e.target.value);
+            });
+
+            document.getElementById('hide-ui-btn').addEventListener('click', () => {
+                isUIHidden = !isUIHidden;
+                if (isUIHidden) {
+                    document.body.classList.add('ui-hidden');
+                    document.getElementById('hide-ui-btn').innerText = '👁️‍🗨️';
+                } else {
+                    document.body.classList.remove('ui-hidden');
+                    document.getElementById('hide-ui-btn').innerText = '👁️';
+                }
+            });
+
+            document.getElementById('flip-cam-btn').addEventListener('click', async () => {
+                cameraFacingMode = cameraFacingMode === 'user' ? 'environment' : 'user';
+                if (isCameraReady && camera) {
+                    await camera.stop();
+                    initMediaPipe(); // Restart with new facing mode
+                }
+            });
+            
+            updateMediaDimensions();
+            document.getElementById('debug-info').innerText = "Ready. Click Start.";
+        }
+
+        function updateMediaDimensions() {
+            let maxW = width * 0.85;
+            let maxH = height * 0.55;
+            
+            if (mediaSourceW === 0 || mediaSourceH === 0) {
+                // Default fallback
+                baseMediaW = width * 0.7;
+                baseMediaH = height * 0.5;
+            } else {
+                let mediaAspect = mediaSourceW / mediaSourceH;
+                let maxAspect = maxW / maxH;
+                
+                if (mediaAspect > maxAspect) {
+                    baseMediaW = maxW;
+                    baseMediaH = maxW / mediaAspect;
+                } else {
+                    baseMediaH = maxH;
+                    baseMediaW = maxH * mediaAspect;
+                }
+            }
+            initCloth();
+        }
+
+        function initCloth() {
+            points = [];
+            sticks = [];
+            
+            // Use adaptive dimensions based on uploaded media
+            const clothWidth = baseMediaW;
+            const clothHeight = baseMediaH * 1.25; // Added 25% slack at the bottom
+            const startX = (width - clothWidth) / 2;
+            const startY = 100;
+            
+            spacingX = clothWidth / (CLOTH_COLS - 1);
+            spacingY = clothHeight / (CLOTH_ROWS - 1);
+
+            // Create points
+            for (let y = 0; y < CLOTH_ROWS; y++) {
+                for (let x = 0; x < CLOTH_COLS; x++) {
+                    let px = startX + x * spacingX;
+                    let py = startY + y * spacingY;
+                    let p = {
+                        x: px,
+                        y: py,
+                        oldX: px,
+                        oldY: py,
+                        origBaseX: px,
+                        origBaseY: py,
+                        randomOffsetX: random(-20, 20), // For irregular bunching
+                        randomOffsetY: random(-35, 5),
+                        pinned: (y === 0), // Pin the top row
+                        wasGrabbed: false
+                    };
+                    points.push(p);
+                }
+            }
+
+            // Create sticks (constraints)
+            for (let y = 0; y < CLOTH_ROWS; y++) {
+                for (let x = 0; x < CLOTH_COLS; x++) {
+                    if (x < CLOTH_COLS - 1) {
+                        sticks.push({
+                            p1: points[y * CLOTH_COLS + x],
+                            p2: points[y * CLOTH_COLS + x + 1],
+                            len: spacingX
+                        });
+                    }
+                    if (y < CLOTH_ROWS - 1) {
+                        sticks.push({
+                            p1: points[y * CLOTH_COLS + x],
+                            p2: points[(y + 1) * CLOTH_COLS + x],
+                            len: spacingY
+                        });
+                    }
+                }
+            }
+        }
+
+        async function initMediaPipe() {
+            document.getElementById('debug-info').innerText = "Starting Camera...";
+            
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+
+            hands.setOptions({
+                maxNumHands: 2, // Support both left and right hands simultaneously
+                modelComplexity: 1,
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onHandResults);
+
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480,
+                facingMode: cameraFacingMode
+            });
+
+            try {
+                await camera.start();
+                isCameraReady = true;
+                document.getElementById('debug-info').innerText = "System Active";
+            } catch (err) {
+                console.error(err);
+                document.getElementById('debug-info').innerText = "Camera Error: " + err.message;
+            }
+        }
+
+        function onHandResults(results) {
+            let newActiveHands = [];
+            if (results.multiHandLandmarks) {
+                for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+                    const landmarks = results.multiHandLandmarks[i];
+                    const thumbTip = landmarks[4];
+                    const indexTip = landmarks[8];
+                    
+                    const pinchDistance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                    
+                    const midX = (indexTip.x + thumbTip.x) / 2;
+                    const midY = (indexTip.y + thumbTip.y) / 2;
+                    
+                    const screenX = (1 - midX) * width;
+                    const screenY = midY * height;
+                    
+                    // Find the closest previous hand to maintain state (fixes hand-swapping drop issue)
+                    let prevHand = null;
+                    let minD = Infinity;
+                    for (let ph of activeHands) {
+                        let d = Math.hypot(ph.x - screenX, ph.y - screenY);
+                        if (d < 200 && d < minD) { // 200px tracking radius between frames
+                            minD = d;
+                            prevHand = ph;
+                        }
+                    }
+                    
+                    let wasPinching = prevHand ? prevHand.isPinching : false;
+                    
+                    // Reduced hysteresis: easier to release, less sticky
+                    const pinchThreshold = wasPinching ? 0.08 : 0.05;
+                    const isPinching = pinchDistance < pinchThreshold;
+                    
+                    // Trigger ripple effect on initial grab
+                    if (isPinching && !wasPinching) {
+                        ripples.push({x: screenX, y: screenY, r: 0, maxR: 100, alpha: 200});
+                    }
+                    
+                    newActiveHands.push({
+                        x: screenX,
+                        y: screenY,
+                        isPinching: isPinching,
+                        grabbedNode: prevHand ? prevHand.grabbedNode : null
+                    });
+                }
+            }
+            activeHands = newActiveHands;
+        }
+
+        function drawCoverMediaRect(img, imgW, imgH, rx, ry, rw, rh) {
+            let imgAspect = imgW / imgH;
+            let rectAspect = rw / rh;
+            let sx, sy, sw, sh;
+
+            if (imgAspect > rectAspect) {
+                // Image is wider than rect
+                sh = imgH;
+                sw = imgH * rectAspect;
+                sx = (imgW - sw) / 2;
+                sy = 0;
+            } else {
+                // Image is taller than rect
+                sw = imgW;
+                sh = imgW / rectAspect;
+                sx = 0;
+                sy = (imgH - sh) / 2;
+            }
+            
+            // Apply zoom
+            let zoomSw = sw / mediaZoom;
+            let zoomSh = sh / mediaZoom;
+            let zoomSx = sx + (sw - zoomSw) / 2;
+            let zoomSy = sy + (sh - zoomSh) / 2;
+
+            // Constrain source coordinates to avoid out-of-bounds drawing
+            zoomSx = Math.max(0, Math.min(zoomSx, imgW - zoomSw));
+            zoomSy = Math.max(0, Math.min(zoomSy, imgH - zoomSh));
+
+            // Draw with object-fit: cover logic
+            drawingContext.drawImage(img, zoomSx, zoomSy, zoomSw, zoomSh, rx, ry, rw, rh);
+        }
+
+        function drawCameraFeed() {
+            if (isCameraReady && videoElement.videoWidth > 0) {
+                push();
+                if (cameraFacingMode === 'user') {
+                    translate(width, 0);
+                    scale(-1, 1); // Mirror front camera
+                }
+                let aspect = videoElement.videoWidth / videoElement.videoHeight;
+                let vh = height;
+                let vw = height * aspect;
+                if (vw < width) {
+                    vw = width;
+                    vh = width / aspect;
+                }
+                drawingContext.drawImage(videoElement, (width - vw) / 2, (height - vh) / 2, vw, vh);
+                pop();
+            }
+        }
+
+        function calculatePerimeter() {
+            perimeter = [];
+            let addPoint = (p) => {
+                // Initialize noise offset if not present
+                if (p.edgeNoise === undefined) p.edgeNoise = random(1000);
+                // Random perturbation ±3px using noise for organic, frayed fabric feel
+                let nx = p.x + (noise(p.edgeNoise + frameCount * 0.05) - 0.5) * 6;
+                let ny = p.y + (noise(p.edgeNoise + 1000 + frameCount * 0.05) - 0.5) * 6;
+                perimeter.push({x: nx, y: ny});
+            };
+            for (let x = 0; x < CLOTH_COLS; x++) addPoint(points[x]);
+            for (let y = 1; y < CLOTH_ROWS; y++) addPoint(points[y * CLOTH_COLS + (CLOTH_COLS - 1)]);
+            for (let x = CLOTH_COLS - 2; x >= 0; x--) addPoint(points[(CLOTH_ROWS - 1) * CLOTH_COLS + x]);
+            for (let y = CLOTH_ROWS - 2; y > 0; y--) addPoint(points[y * CLOTH_COLS]);
+        }
+
+        function draw() {
+            background(0);
+            
+            updatePhysics();
+            calculatePerimeter();
+
+            // 1. Base Layer: Global Camera Feed
+            drawCameraFeed();
+
+            // 2. Middle Layer: The Uploaded Media (Adaptive Size)
+            // It sits exactly where the cloth initially rests.
+            let fixedW = baseMediaW;
+            let fixedH = baseMediaH;
+            let fixedX = (width - fixedW) / 2;
+            let fixedY = 100;
+
+            if (uploadedMediaType) {
+                if (uploadedMediaType === 'image' && uploadedImage.complete) {
+                    drawCoverMediaRect(uploadedImage, uploadedImage.naturalWidth, uploadedImage.naturalHeight, fixedX, fixedY, fixedW, fixedH);
+                } else if (uploadedMediaType === 'video' && uploadedVideo.readyState >= 2) {
+                    drawCoverMediaRect(uploadedVideo, uploadedVideo.videoWidth, uploadedVideo.videoHeight, fixedX, fixedY, fixedW, fixedH);
+                }
+            } else {
+                // Dark placeholder if no media is uploaded yet
+                push();
+                fill(20, 20, 20, 200);
+                noStroke();
+                rect(fixedX, fixedY, fixedW, fixedH);
+                fill(255, 255, 255, 150);
+                textAlign(CENTER, CENTER);
+                textSize(16);
+                text("Upload Media\n(Revealed under the invisible curtain)", fixedX + fixedW/2, fixedY + fixedH/2);
+                pop();
+            }
+
+            // 3. Top Layer: The Invisible Cloth
+            // The cloth acts as a clipping mask, and we draw the Camera Feed INSIDE it again.
+            // Since it perfectly aligns with the Base Layer, it creates an "optical camouflage" effect.
+            push();
+            drawingContext.beginPath();
+            if (perimeter.length > 0) {
+                drawingContext.moveTo(perimeter[0].x, perimeter[0].y);
+                for (let i = 1; i < perimeter.length; i++) {
+                    drawingContext.lineTo(perimeter[i].x, perimeter[i].y);
+                }
+                drawingContext.closePath();
+                drawingContext.clip();
+            }
+            drawCameraFeed();
+            pop();
+
+            // 4. Draw the dynamic material visuals (stretch-based opacity + soft edge)
+            renderClothVisuals();
+
+            // 5. Draw hand interaction feedback
+            renderInteraction();
+        }
+
+        function updatePhysics() {
+            grabbedNodes = [];
+
+            // Subtle ambient breathing (Perlin noise wind) to make it feel alive and natural
+            let windX = (noise(frameCount * 0.005) - 0.5) * 0.08;
+            let windY = (noise(frameCount * 0.005 + 1000) - 0.5) * 0.08;
+
+            // Handle Mouse/Touch Grabbing
+            if (mouseIsPressed) {
+                if (!wasMousePressed) {
+                    ripples.push({x: mouseX, y: mouseY, r: 0, maxR: 80, alpha: 200});
+                }
+                if (!mouseGrabbedNode) {
+                    let closestDist = interactionRadius;
+                    for (let p of points) {
+                        let d = dist(mouseX, mouseY, p.x, p.y);
+                        if (d < closestDist && !p.pinned) {
+                            closestDist = d;
+                            mouseGrabbedNode = p;
+                        }
+                    }
+                }
+                if (mouseGrabbedNode) {
+                    // Firm hold: preserve old positions to calculate velocity upon release
+                    mouseGrabbedNode.oldX = mouseGrabbedNode.x;
+                    mouseGrabbedNode.oldY = mouseGrabbedNode.y;
+                    mouseGrabbedNode.x = mouseX;
+                    mouseGrabbedNode.y = mouseY;
+                    grabbedNodes.push(mouseGrabbedNode);
+                }
+            } else {
+                mouseGrabbedNode = null;
+            }
+
+            // Handle Multi-Hand Simultaneous Grabbing
+            for (let h of activeHands) {
+                if (h.isPinching) {
+                    if (!h.grabbedNode) {
+                        let closestDist = interactionRadius; // Strict point distance
+                        let target = null;
+                        for (let p of points) {
+                            let d = dist(h.x, h.y, p.x, p.y);
+                            if (d < closestDist && !p.pinned && !grabbedNodes.includes(p)) {
+                                closestDist = d;
+                                target = p;
+                            }
+                        }
+                        if (target) {
+                            h.grabbedNode = target;
+                        }
+                    }
+                    
+                    if (h.grabbedNode) {
+                        // Firm hold: absolute lock to hand coordinates, preserving velocity
+                        h.grabbedNode.oldX = h.grabbedNode.x;
+                        h.grabbedNode.oldY = h.grabbedNode.y;
+                        h.grabbedNode.x = h.x;
+                        h.grabbedNode.y = h.y;
+                        grabbedNodes.push(h.grabbedNode);
+                    }
+                } else {
+                    h.grabbedNode = null; // Release firmly
+                }
+            }
+
+            // Check for throw/pull down gestures based on physical position
+            for (let p of grabbedNodes) {
+                if (isCurtainThrown && p.y > 100 + 180) {
+                    isCurtainThrown = false; // Pulled down far enough to release
+                } else if (!isCurtainThrown && p.y < 100 - 10) {
+                    isCurtainThrown = true; // Pushed up over the top edge
+                }
+            }
+
+            // Update points (Verlet Integration)
+            for (let p of points) {
+                if (!p.pinned && !grabbedNodes.includes(p)) {
+                    let vx = (p.x - p.oldX) * FRICTION;
+                    let vy = (p.y - p.oldY) * FRICTION;
+                    
+                    // Velocity-based throw detection upon release (flick gesture)
+                    if (p.wasGrabbed) {
+                        if (vy < -15) isCurtainThrown = true; // Easier upward throw
+                        if (vy > 15) isCurtainThrown = false; // Easier downward pull
+                    }
+                    
+                    let targetX = p.origBaseX;
+                    let targetY = p.origBaseY;
+                    
+                    if (isCurtainThrown) {
+                        targetX += p.randomOffsetX;
+                        // Target Y slightly above the top edge (100) to simulate resting/bunching on top
+                        targetY = 85 + p.randomOffsetY; 
+                    }
+                    
+                    // Increased restoring force for faster drop and recovery
+                    let restoreForce = isCurtainThrown ? 0.025 : 0.0015;
+                    let restoreX = (targetX - p.x) * restoreForce;
+                    let restoreY = (targetY - p.y) * restoreForce;
+                    
+                    p.oldX = p.x;
+                    p.oldY = p.y;
+                    p.x += vx + windX + restoreX;
+                    p.y += vy + windY + restoreY + GRAVITY; // Added gravity for realistic fall
+                }
+                p.wasGrabbed = grabbedNodes.includes(p);
+            }
+
+            // Constraints with Soft Elasticity
+            for (let i = 0; i < ITERATIONS; i++) {
+                for (let s of sticks) {
+                    let dx = s.p2.x - s.p1.x;
+                    let dy = s.p2.y - s.p1.y;
+                    let distance = sqrt(dx * dx + dy * dy);
+                    let difference = s.len - distance;
+                    let percent = difference / distance / 2;
+                    let stiffness = 0.4; // Softer mesh prevents the cloth from locking up against itself
+                    let offsetX = dx * percent * stiffness;
+                    let offsetY = dy * percent * stiffness;
+
+                    if (!s.p1.pinned && !grabbedNodes.includes(s.p1)) {
+                        s.p1.x -= offsetX;
+                        s.p1.y -= offsetY;
+                    }
+                    if (!s.p2.pinned && !grabbedNodes.includes(s.p2)) {
+                        s.p2.x += offsetX;
+                        s.p2.y += offsetY;
+                    }
+                }
+            }
+            wasMousePressed = mouseIsPressed;
+        }
+
+        function renderClothVisuals() {
+            // 1. Stress-based 3D Shading (Folds and Highlights)
+            // Calculate the compression/stretch of each quad to draw dynamic shadows and highlights
+            noStroke();
+            for (let y = 0; y < CLOTH_ROWS - 1; y++) {
+                for (let x = 0; x < CLOTH_COLS - 1; x++) {
+                    let p1 = points[y * CLOTH_COLS + x];
+                    let p2 = points[y * CLOTH_COLS + x + 1];
+                    let p3 = points[(y + 1) * CLOTH_COLS + x + 1];
+                    let p4 = points[(y + 1) * CLOTH_COLS + x];
+
+                    let currentW = dist(p1.x, p1.y, p2.x, p2.y);
+                    let currentH = dist(p1.x, p1.y, p4.x, p4.y);
+                    let ratio = (currentW * currentH) / (spacingX * spacingY);
+
+                    if (ratio < 0.95) {
+                        // Folded / Compressed -> Darken (Shadow)
+                        // Increased max alpha for deeper base shadow
+                        let baseAlpha = map(ratio, 0.3, 0.95, 180, 0);
+                        fill(0, 0, 0, constrain(baseAlpha, 0, 180));
+                        beginShape();
+                        vertex(p1.x, p1.y); vertex(p2.x, p2.y); vertex(p3.x, p3.y); vertex(p4.x, p4.y);
+                        endShape(CLOSE);
+                        
+                        // Dramatic colored ambient light for deep folds (Silk/Satin effect)
+                        if (ratio < 0.7) {
+                            let colorAlpha = map(ratio, 0.3, 0.7, 140, 0);
+                            // Deep cool blue/purple for dramatic satin shadows
+                            fill(20, 30, 80, constrain(colorAlpha, 0, 140));
+                            beginShape();
+                            vertex(p1.x, p1.y); vertex(p2.x, p2.y); vertex(p3.x, p3.y); vertex(p4.x, p4.y);
+                            endShape(CLOSE);
+                        }
+                    } else if (ratio > 1.05) {
+                        // Stretched / Tight -> Lighten (Highlight)
+                        let alpha = map(ratio, 1.05, 1.5, 0, 90);
+                        // Warm tint for satin highlights
+                        fill(255, 245, 230, constrain(alpha, 0, 90));
+                        beginShape();
+                        vertex(p1.x, p1.y); vertex(p2.x, p2.y); vertex(p3.x, p3.y); vertex(p4.x, p4.y);
+                        endShape(CLOSE);
+                    }
+                }
+            }
+
+            // 2. Continuous Liquid Edge (Removed per-segment dots/artifacts)
+            noFill();
+            if (perimeter.length > 0) {
+                // Layer A: Inner dark rim (water volume refraction)
+                drawingContext.shadowBlur = 0;
+                stroke(0, 0, 0, 30);
+                strokeWeight(4);
+                beginShape();
+                for (let i = 0; i < perimeter.length + 3; i++) {
+                    let p = perimeter[i % perimeter.length];
+                    curveVertex(p.x, p.y);
+                }
+                endShape();
+
+                // Layer B: Specular liquid highlight
+                drawingContext.shadowBlur = 12;
+                drawingContext.shadowColor = 'rgba(255, 255, 255, 0.8)';
+                stroke(255, 255, 255, 180);
+                strokeWeight(1.5);
+                beginShape();
+                for (let i = 0; i < perimeter.length + 3; i++) {
+                    let p = perimeter[i % perimeter.length];
+                    curveVertex(p.x, p.y);
+                }
+                endShape();
+            }
+            
+            drawingContext.shadowBlur = 0;
+            
+            // 3. Subtle Interaction Feedback for multiple grab points
+            // Visual grab dots removed for a cleaner look
+            drawingContext.shadowBlur = 0;
+        }
+
+        function renderInteraction() {
+            // Draw Ripple Effects
+            push();
+            noFill();
+            strokeWeight(2.5);
+            for (let i = ripples.length - 1; i >= 0; i--) {
+                let r = ripples[i];
+                stroke(255, 255, 255, r.alpha);
+                ellipse(r.x, r.y, r.r * 2);
+                
+                // Expand and fade
+                r.r += (r.maxR - r.r) * 0.1 + 1; // Easing expansion
+                r.alpha -= 8; // Fade out (~0.5 seconds at 60fps)
+                
+                if (r.alpha <= 0) {
+                    ripples.splice(i, 1);
+                }
+            }
+            pop();
+        }
+
+        function windowResized() {
+            resizeCanvas(windowWidth, windowHeight);
+            updateMediaDimensions();
+        }
+
+        // Prevent scrolling on mobile
+        document.addEventListener('touchmove', (e) => e.preventDefault(), { passive: false });
+    </script>
+</body>
+</html>
