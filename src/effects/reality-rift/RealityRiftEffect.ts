@@ -56,6 +56,11 @@ export const DEFAULT_REALITY_RIFT_TUNING: RealityRiftTuning = {
 const BASE_TRIGGER = .05
 const RELEASE_DELAY = 110
 const EDGE_SAMPLES = 23
+const RIFT_EDGE_CORE = 'rgba(10, 16, 20, .72)'
+const RIFT_EDGE_LIGHT = 'rgba(241, 247, 248, .92)'
+const RIFT_EDGE_COOL = 'rgba(190, 224, 229, .32)'
+const RIFT_EDGE_LAVENDER = 'rgba(220, 218, 231, .18)'
+const RIFT_GLOW = 'rgba(184, 224, 229, .24)'
 
 export class RealityRiftEffect {
   private context: CanvasRenderingContext2D
@@ -95,6 +100,7 @@ export class RealityRiftEffect {
   private leftSeeds = this.createSeeds(11.7)
   private rightSeeds = this.createSeeds(73.4)
   private hasReportedOpen = false
+  private seamFadeUntil = 0
   private quality: QualityLevel = 'high'
   private paused = false
 
@@ -218,7 +224,13 @@ export class RealityRiftEffect {
     }
     const damping = this.targetWidth > this.openWidth ? this.tuning.riftDamping : Math.max(.24, this.tuning.riftDamping * .58)
     this.openWidth += (this.targetWidth - this.openWidth) * damping
-    if (this.openWidth < .25 && this.targetWidth === 0) { this.openWidth = 0; if (this.state === 'closing') this.setState('idle') }
+    if (this.openWidth < .25 && this.targetWidth === 0) {
+      this.openWidth = 0
+      if (this.state === 'closing') {
+        this.seamFadeUntil = performance.now() + 170
+        this.setState('idle')
+      }
+    }
     const speed = Math.hypot(this.targetCenterX - this.centerX, this.targetCenterY - this.centerY)
     const adaptive = Math.min(.94, (1 - this.tuning.handSmoothing) + speed / 500)
     this.centerX += (this.targetCenterX - this.centerX) * adaptive
@@ -333,6 +345,7 @@ export class RealityRiftEffect {
       this.context.save(); this.trace(shape.polygon); this.context.clip(); this.drawWorld(); this.context.restore()
       this.drawCracks(shape); this.drawEdge(shape); this.drawGripTension(shape)
     }
+    else this.drawClosingSeam()
     this.drawPendingFeedback()
     if (this.debugEnabled) this.drawDebug()
   }
@@ -378,8 +391,8 @@ export class RealityRiftEffect {
 
   private drawStretch(shape: Shape) {
     const openness = Math.min(1, this.openWidth / (this.width * .45))
-    const strength = this.tuning.stretchStrength * (1 + this.tearImpulse * 1.8)
-    this.context.save(); this.context.globalAlpha = .3 + openness * .28
+    const strength = this.tuning.stretchStrength * .58 * (1 + this.tearImpulse * 1.15)
+    this.context.save(); this.context.globalAlpha = .18 + openness * .2
     const sliceStep = this.quality === 'high' ? 2 : this.quality === 'medium' ? 3 : 5
     for (let index = 2; index < EDGE_SAMPLES - 2; index += sliceStep) {
       const left = shape.left[index], right = shape.right[index]
@@ -394,10 +407,15 @@ export class RealityRiftEffect {
   private drawEdge(shape: Shape) {
     const glow = this.tuning.glowStrength * (1 + this.tearImpulse * 1.6)
     this.context.save(); this.context.lineJoin = 'round'; this.context.lineCap = 'round'
-    this.trace(shape.polygon); this.context.strokeStyle = 'rgba(0,0,0,.72)'; this.context.lineWidth = Math.max(3, Math.min(10, this.openWidth * .022)); this.context.stroke()
+    this.trace(shape.polygon); this.context.strokeStyle = RIFT_EDGE_CORE; this.context.lineWidth = Math.max(1.2, Math.min(2.4, this.openWidth * .007)); this.context.stroke()
     const qualityGlow = this.quality === 'high' ? 1 : this.quality === 'medium' ? .65 : .25
-    this.trace(shape.polygon); this.context.shadowBlur = 9 * glow * qualityGlow; this.context.shadowColor = `rgba(126,100,210,${.36 * glow})`; this.context.strokeStyle = `rgba(117,91,190,${Math.min(.68, .35 * glow)})`; this.context.lineWidth = 4 + this.tearImpulse * 2; this.context.stroke()
-    this.trace(shape.polygon); this.context.shadowBlur = 3 * glow; this.context.strokeStyle = `rgba(238,240,255,${Math.min(.9, .58 * glow)})`; this.context.lineWidth = 1 + this.tearImpulse * 1.2; this.context.stroke()
+    this.trace(shape.polygon); this.context.shadowBlur = 5 * glow * qualityGlow; this.context.shadowColor = RIFT_GLOW; this.context.strokeStyle = RIFT_EDGE_COOL; this.context.lineWidth = 2.2; this.context.stroke()
+    this.trace(shape.polygon); this.context.shadowBlur = 1.5 * glow; this.context.strokeStyle = RIFT_EDGE_LIGHT; this.context.lineWidth = 1.15; this.context.stroke()
+    this.context.globalAlpha = .34
+    this.context.setLineDash([18, 34, 8, 42])
+    this.context.lineDashOffset = this.frame * .12
+    this.trace(shape.polygon); this.context.strokeStyle = RIFT_EDGE_LAVENDER; this.context.lineWidth = .75; this.context.stroke()
+    this.context.setLineDash([])
     this.context.restore()
   }
 
@@ -422,6 +440,25 @@ export class RealityRiftEffect {
       )
       this.context.stroke()
     }
+    this.context.restore()
+  }
+
+  private drawClosingSeam() {
+    const remaining = this.seamFadeUntil - performance.now()
+    if (remaining <= 0) return
+    const alpha = Math.min(1, remaining / 170)
+    const halfHeight = this.height * .12
+    this.context.save()
+    this.context.globalAlpha = alpha
+    this.context.strokeStyle = RIFT_EDGE_LIGHT
+    this.context.shadowBlur = 3
+    this.context.shadowColor = RIFT_GLOW
+    this.context.lineWidth = .75
+    this.context.beginPath()
+    this.context.moveTo(this.centerX, this.centerY - halfHeight)
+    this.context.lineTo(this.centerX + Math.sin(this.frame * .4) * .7, this.centerY)
+    this.context.lineTo(this.centerX, this.centerY + halfHeight)
+    this.context.stroke()
     this.context.restore()
   }
 

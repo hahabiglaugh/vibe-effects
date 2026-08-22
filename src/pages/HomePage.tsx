@@ -21,7 +21,7 @@ const featuredEffects = [
     number: '03',
     name: '空间裂缝',
     status: '立即体验',
-    description: '用双手撕开现实，看看另一边是什么。',
+    description: '上传一个世界，再用双手把现实撕开。',
     path: '/play/reality-rift',
     tone: 'rift',
   },

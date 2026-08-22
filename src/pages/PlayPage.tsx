@@ -76,6 +76,7 @@ function PlayPage() {
   const performanceFrameRef = useRef<number | null>(null)
   const qualityRef = useRef<QualityLevel>(matchMedia('(pointer: coarse)').matches ? 'medium' : 'high')
   const bubbleTutorialPopRef = useRef(false)
+  const tutorialCompletedRef = useRef(false)
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [facingMode, setFacingMode] = useState<CameraFacingMode>('user')
   const [cameraError, setCameraError] = useState<CameraErrorCode | null>(null)
@@ -98,8 +99,10 @@ function PlayPage() {
   const [riftDebugEnabled, setRiftDebugEnabled] = useState(false)
   const [riftPanelOpen, setRiftPanelOpen] = useState(false)
   const [riftTuning, setRiftTuning] = useState<RealityRiftTuning>(() => ({ ...DEFAULT_REALITY_RIFT_TUNING }))
-  const [coachStep, setCoachStep] = useState<0 | 1 | null>(null)
+  const [coachStep, setCoachStep] = useState<0 | 1 | 2 | null>(null)
   const [mediaToast, setMediaToast] = useState(false)
+  const [riftSuccessToast, setRiftSuccessToast] = useState(false)
+  const [helpMenuOpen, setHelpMenuOpen] = useState(false)
   const [showPermissionReminder, setShowPermissionReminder] = useState(false)
   const [cameraPaused, setCameraPaused] = useState(false)
   const [capabilityWarning] = useState(() => getCapabilityWarning())
@@ -123,10 +126,12 @@ function PlayPage() {
   const showTutorialIfNeeded = () => {
     let completed = false
     try { completed = window.localStorage.getItem(tutorialKey) === '1' } catch { /* Optional memory. */ }
-    if (!completed) setCoachStep(0)
+    tutorialCompletedRef.current = completed
+    if (!completed && !isRealityRift) setCoachStep(0)
   }
 
   const completeTutorial = () => {
+    tutorialCompletedRef.current = true
     setCoachStep(null)
     try { window.localStorage.setItem(tutorialKey, '1') } catch { /* Optional memory. */ }
   }
@@ -265,12 +270,18 @@ function PlayPage() {
 
   const dismissRiftHint = () => {
     setShowRiftHint(false)
+    const wasCompleted = tutorialCompletedRef.current
     completeTutorial()
+    if (!wasCompleted) {
+      setRiftSuccessToast(true)
+      window.setTimeout(() => mountedRef.current && setRiftSuccessToast(false), 800)
+    }
   }
 
   const handleRiftGrabState = (state: 'idle' | 'armed' | 'dual_locked' | 'closing') => {
     setRiftGrabState(state)
-    if (state === 'dual_locked') setCoachStep(1)
+    if (!tutorialCompletedRef.current && state === 'armed') setCoachStep(1)
+    if (!tutorialCompletedRef.current && state === 'dual_locked') setCoachStep(2)
   }
 
   const handleCurtainGrab = () => {
@@ -282,6 +293,13 @@ function PlayPage() {
     setCoachStep(0)
     window.setTimeout(() => mountedRef.current && setCoachStep(1), 1600)
     window.setTimeout(() => mountedRef.current && setCoachStep(null), 3400)
+  }
+
+  const playRiftDemo = () => {
+    setHelpMenuOpen(false)
+    setCoachStep(0)
+    window.setTimeout(() => mountedRef.current && setCoachStep(2), 1700)
+    window.setTimeout(() => mountedRef.current && setCoachStep(null), 3800)
   }
 
   const updateRiftParameter = (key: keyof RealityRiftTuning, value: number) => {
@@ -644,6 +662,12 @@ function PlayPage() {
       await mediaEffect.setMedia(file)
       setHasUploadedMedia(true)
       setMediaToast(true)
+      if (isRealityRift) {
+        let completed = false
+        try { completed = window.localStorage.getItem(tutorialKey) === '1' } catch { /* Optional memory. */ }
+        tutorialCompletedRef.current = completed
+        if (!completed) setCoachStep(0)
+      }
       window.setTimeout(() => mountedRef.current && setMediaToast(false), 1500)
     } catch {
       setHasUploadedMedia(false)
@@ -740,13 +764,19 @@ function PlayPage() {
             <p className="recording-error" role="alert">{recordingError}</p>
           )}
           {coachStep !== null && (
-            <div className="gesture-coach" role="status">
-              <span aria-hidden="true">{getCoachContent(effectId, coachStep).symbol}</span>
-              <p>{getCoachContent(effectId, coachStep).text}</p>
-            </div>
+            isRealityRift
+              ? <RiftGestureCoach step={coachStep} />
+              : <div className="gesture-coach" role="status">
+                  <span aria-hidden="true">{getCoachContent(effectId, coachStep).symbol}</span>
+                  <p>{getCoachContent(effectId, coachStep).text}</p>
+                </div>
           )}
-          <button className="play-help-button" type="button" aria-label="重新查看玩法提示" onClick={replayTutorial}>?</button>
-          {mediaToast && <p className="media-loaded-toast" role="status">素材已加载</p>}
+          <button className="play-help-button" type="button" aria-label="重新查看玩法提示" onClick={isRealityRift ? () => setHelpMenuOpen((open) => !open) : replayTutorial}>?</button>
+          {isRealityRift && helpMenuOpen && (
+            <div className="play-help-menu"><button type="button" onClick={playRiftDemo}>查看操作演示</button></div>
+          )}
+          {mediaToast && <p className="media-loaded-toast" role="status">{isRealityRift ? '现在用双手撕开现实' : '素材已加载'}</p>}
+          {riftSuccessToast && <p className="rift-success-toast" role="status">就是这样</p>}
           {!isBubbleverse && !hasUploadedMedia && (
             <p className="media-hint">{mediaError ?? (isRealityRift ? '先选择裂缝另一边的世界' : '上传图片或视频，藏在幕布后面')}</p>
           )}
@@ -924,7 +954,21 @@ function formatRecordingTime(seconds: number) {
   return `${minutes}:${remainingSeconds}`
 }
 
-function getCoachContent(effectId: string, step: 0 | 1) {
+function RiftGestureCoach({ step }: { step: 0 | 1 | 2 }) {
+  const text = step === 0 ? '双手捏住现实' : step === 1 ? '再用另一只手捏住' : '向两边拉开'
+  return (
+    <div className={`gesture-coach rift-gesture-coach rift-coach-step-${step}`} role="status">
+      <div className="rift-coach-motion" aria-hidden="true">
+        <i className="rift-coach-hand rift-coach-hand-left"><b /><em /></i>
+        <span className="rift-coach-seam" />
+        <i className="rift-coach-hand rift-coach-hand-right"><b /><em /></i>
+      </div>
+      <p>{text}</p>
+    </div>
+  )
+}
+
+function getCoachContent(effectId: string, step: 0 | 1 | 2) {
   if (effectId === 'bubbleverse') {
     return step === 0
       ? { symbol: '☝', text: '用食指戳破泡泡' }
