@@ -15,7 +15,9 @@ import {
 import {
   CameraService,
   CameraServiceError,
+  type CameraDevice,
   type CameraErrorCode,
+  type CameraState,
   type CameraFacingMode,
 } from '../services/cameraService'
 import { HandTrackingService } from '../services/handTrackingService'
@@ -41,6 +43,12 @@ const errorContent: Record<CameraErrorCode, { title: string; description?: strin
   },
   'not-found': {
     title: '未检测到可用摄像头',
+  },
+  'not-readable': {
+    title: '摄像头可能正在被其他程序占用',
+  },
+  'overconstrained': {
+    title: '当前摄像头无法使用，正在尝试默认设备',
   },
   'start-failed': {
     title: '摄像头启动失败，请稍后重试。',
@@ -79,6 +87,11 @@ function PlayPage() {
   const tutorialCompletedRef = useRef(false)
   const [status, setStatus] = useState<CameraStatus>('idle')
   const [facingMode, setFacingMode] = useState<CameraFacingMode>('user')
+  const [isCameraMirrored, setIsCameraMirrored] = useState(true)
+  const [cameraDevices, setCameraDevices] = useState<CameraDevice[]>([])
+  const [selectedCameraDeviceId, setSelectedCameraDeviceId] = useState<string | null>(null)
+  const [cameraMenuOpen, setCameraMenuOpen] = useState(false)
+  const [cameraToast, setCameraToast] = useState<string | null>(null)
   const [cameraError, setCameraError] = useState<CameraErrorCode | null>(null)
   const [hasUploadedMedia, setHasUploadedMedia] = useState(false)
   const [mediaError, setMediaError] = useState<string | null>(null)
@@ -160,6 +173,23 @@ function PlayPage() {
       realityRiftEffectRef.current = null
       cameraService.stop()
     }
+  }, [])
+
+  useEffect(() => {
+    const mediaDevices = navigator.mediaDevices
+    if (!mediaDevices?.addEventListener) return
+    const handleDeviceChange = async () => {
+      const devices = await cameraServiceRef.current.enumerateCameras()
+      if (!mountedRef.current) return
+      setCameraDevices(devices)
+      const currentId = cameraServiceRef.current.currentDeviceId
+      if (!cameraServiceRef.current.isActive || !currentId || devices.some((device) => device.deviceId === currentId) || !videoRef.current) return
+      setCameraToast('摄像头已断开，已切换到可用设备')
+      window.setTimeout(() => mountedRef.current && setCameraToast(null), 2500)
+      await changeCamera(() => cameraServiceRef.current.selectDevice(videoRef.current!, devices[0]?.deviceId ?? ''))
+    }
+    mediaDevices.addEventListener('devicechange', handleDeviceChange)
+    return () => mediaDevices.removeEventListener('devicechange', handleDeviceChange)
   }, [])
 
   useEffect(() => {
@@ -326,14 +356,14 @@ function PlayPage() {
 
   const startHandTracking = async (
     video: HTMLVideoElement,
-    activeFacingMode: CameraFacingMode,
+    mirrored: boolean,
   ) => {
     await handTrackingServiceRef.current?.destroy()
     const handTrackingService = new HandTrackingService()
     handTrackingServiceRef.current = handTrackingService
 
     try {
-      await handTrackingService.start(video, activeFacingMode, {
+      await handTrackingService.start(video, mirrored, {
         onHands: (hands) => {
           performanceMonitorRef.current?.handInference()
           curtainEffectRef.current?.setHands(hands)
@@ -368,7 +398,8 @@ function PlayPage() {
     setCameraError(null)
 
     try {
-      const activeFacingMode = await cameraServiceRef.current.start(videoRef.current, 'user')
+      const cameraState = await cameraServiceRef.current.start(videoRef.current)
+      const activeFacingMode: CameraFacingMode = cameraState.isCameraMirrored ? 'user' : 'environment'
       if (canvasRef.current && isBubbleverse) {
         bubbleverseEffectRef.current?.destroy()
         bubbleverseEffectRef.current = new BubbleverseEffect(
@@ -404,6 +435,9 @@ function PlayPage() {
         curtainEffectRef.current.setQuality(qualityRef.current)
       }
       setFacingMode(activeFacingMode)
+      setIsCameraMirrored(cameraState.isCameraMirrored)
+      setSelectedCameraDeviceId(cameraState.selectedCameraDeviceId)
+      setCameraDevices(await cameraServiceRef.current.enumerateCameras())
       setStatus('active')
       if (import.meta.env.DEV) {
         console.debug(`[Vibe Effects] Camera: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`)
@@ -416,7 +450,7 @@ function PlayPage() {
           gestureTipTimerRef.current = window.setTimeout(() => setShowGestureTip(true), 6500)
         }
       }
-      void startHandTracking(videoRef.current, activeFacingMode)
+      void startHandTracking(videoRef.current, cameraState.isCameraMirrored)
     } catch (error) {
       void handTrackingServiceRef.current?.destroy()
       handTrackingServiceRef.current = null
@@ -468,30 +502,34 @@ function PlayPage() {
 
   const switchCamera = async () => {
     if (!videoRef.current || status !== 'active') return
+    await changeCamera(() => cameraServiceRef.current.switchCamera(videoRef.current!, cameraDevices))
+  }
 
-    setStatus('switching')
+  const changeCamera = async (openCamera: () => Promise<CameraState>) => {
+    if (!videoRef.current) return
+    setStatus('switching'); setCameraMenuOpen(false)
     await handTrackingServiceRef.current?.destroy()
-    handTrackingServiceRef.current = null
-    setHandTrackingWarning(null)
-
+    handTrackingServiceRef.current = null; setHandTrackingWarning(null)
     try {
-      const activeFacingMode = await cameraServiceRef.current.switchCamera(videoRef.current)
-      curtainEffectRef.current?.setFacingMode(activeFacingMode)
-      bubbleverseEffectRef.current?.setFacingMode(activeFacingMode)
-      realityRiftEffectRef.current?.setFacingMode(activeFacingMode)
-      setFacingMode(activeFacingMode)
+      const cameraState = await openCamera()
+      const renderMode: CameraFacingMode = cameraState.isCameraMirrored ? 'user' : 'environment'
+      curtainEffectRef.current?.setFacingMode(renderMode)
+      bubbleverseEffectRef.current?.setFacingMode(renderMode)
+      realityRiftEffectRef.current?.setFacingMode(renderMode)
+      setFacingMode(renderMode); setIsCameraMirrored(cameraState.isCameraMirrored)
+      setSelectedCameraDeviceId(cameraState.selectedCameraDeviceId)
+      setCameraDevices(await cameraServiceRef.current.enumerateCameras())
       setStatus('active')
-      void startHandTracking(videoRef.current, activeFacingMode)
+      void startHandTracking(videoRef.current, cameraState.isCameraMirrored)
     } catch (error) {
-      curtainEffectRef.current?.destroy()
-      curtainEffectRef.current = null
-      bubbleverseEffectRef.current?.destroy()
-      bubbleverseEffectRef.current = null
-      realityRiftEffectRef.current?.destroy()
-      realityRiftEffectRef.current = null
       setCameraError(error instanceof CameraServiceError ? error.code : 'start-failed')
       setStatus('error')
     }
+  }
+
+  const selectCamera = (deviceId: string) => {
+    if (!videoRef.current || status !== 'active' || deviceId === selectedCameraDeviceId) { setCameraMenuOpen(false); return }
+    void changeCamera(() => cameraServiceRef.current.selectDevice(videoRef.current!, deviceId))
   }
 
   const exitExperience = () => {
@@ -688,7 +726,7 @@ function PlayPage() {
     <main className={`play-page ${isBubbleverse ? 'bubbleverse-page' : ''} ${isRealityRift ? 'reality-rift-page' : ''} ${recordingStatus === 'recording' || recordingStatus === 'stopping' ? 'play-page-recording' : ''}`}>
       <video
         ref={videoRef}
-        className={`camera-feed ${facingMode === 'user' ? 'camera-feed-mirrored' : ''}`}
+        className={`camera-feed ${isCameraMirrored ? 'camera-feed-mirrored' : ''}`}
         autoPlay
         muted
         playsInline
@@ -777,6 +815,7 @@ function PlayPage() {
           )}
           {mediaToast && <p className="media-loaded-toast" role="status">{isRealityRift ? '现在用双手撕开现实' : '素材已加载'}</p>}
           {riftSuccessToast && <p className="rift-success-toast" role="status">就是这样</p>}
+          {cameraToast && <p className="camera-device-toast" role="status">{cameraToast}</p>}
           {!isBubbleverse && !hasUploadedMedia && (
             <p className="media-hint">{mediaError ?? (isRealityRift ? '先选择裂缝另一边的世界' : '上传图片或视频，藏在幕布后面')}</p>
           )}
@@ -797,6 +836,21 @@ function PlayPage() {
               </button>
               <span className="control-divider" aria-hidden="true" />
             </>}
+            <div className="camera-device-control">
+              <button type="button" onClick={() => setCameraMenuOpen((open) => !open)} disabled={controlsLocked} aria-expanded={cameraMenuOpen}>
+                <span className="control-icon" aria-hidden="true">⌄</span>
+                选择摄像头
+              </button>
+              {cameraMenuOpen && cameraDevices.length > 0 && (
+                <div className="camera-device-menu" role="menu" aria-label="选择摄像头">
+                  <p>选择摄像头</p>
+                  {cameraDevices.map((device) => <button key={device.deviceId} type="button" role="menuitemradio" aria-checked={device.deviceId === selectedCameraDeviceId} onClick={() => selectCamera(device.deviceId)}>
+                    <span aria-hidden="true">{device.deviceId === selectedCameraDeviceId ? '✓' : ''}</span>{device.label}
+                  </button>)}
+                </div>
+              )}
+            </div>
+            <span className="control-divider" aria-hidden="true" />
             <button type="button" onClick={switchCamera} disabled={controlsLocked}>
               <span className="control-icon" aria-hidden="true">↻</span>
               {status === 'switching' ? '正在切换' : '翻转镜头'}

@@ -698,6 +698,25 @@ a {
   transform: scaleX(-1);
 }
 
+.camera-device-control { position: relative; }
+.camera-device-menu {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 14px);
+  width: min(320px, 78vw);
+  transform: translateX(-50%);
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, .2);
+  border-radius: 14px;
+  background: rgba(15, 15, 17, .94);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .38);
+  backdrop-filter: blur(18px);
+}
+.camera-device-menu p { margin: 4px 8px 8px; color: rgba(255,255,255,.55); font-size: 12px; }
+.camera-device-menu button { display: grid; grid-template-columns: 18px 1fr; width: 100%; padding: 10px 8px; text-align: left; border-radius: 9px; }
+.camera-device-menu button:hover { background: rgba(255,255,255,.09); }
+.camera-device-toast { position: fixed; top: 72px; left: 50%; z-index: 12; transform: translateX(-50%); padding: 9px 14px; border-radius: 999px; background: rgba(15,15,17,.88); color: white; font-size: 13px; }
+
 .curtain-canvas {
   position: absolute;
   z-index: 1;

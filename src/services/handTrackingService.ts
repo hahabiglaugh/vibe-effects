@@ -5,7 +5,6 @@ import type {
   NormalizedLandmarkList,
   Results,
 } from '@mediapipe/hands'
-import type { CameraFacingMode } from './cameraService'
 
 type MediaPipeHandsConstructor = new (config?: HandsConfig) => MediaPipeHands
 
@@ -95,7 +94,7 @@ const PALM_LANDMARKS = [0, 5, 9, 13, 17]
 export class HandTrackingService {
   private hands: MediaPipeHands | null = null
   private video: HTMLVideoElement | null = null
-  private facingMode: CameraFacingMode = 'user'
+  private mirrored = true
   private callbacks: HandTrackingCallbacks | null = null
   private previousHands: PreviousHand[] = []
   private animationFrame: number | null = null
@@ -109,14 +108,14 @@ export class HandTrackingService {
 
   async start(
     video: HTMLVideoElement,
-    facingMode: CameraFacingMode,
+    mirrored: boolean,
     callbacks: HandTrackingCallbacks,
   ) {
     await this.destroy()
     const generation = ++this.generation
 
     this.video = video
-    this.facingMode = facingMode
+    this.mirrored = mirrored
     this.callbacks = callbacks
     this.failed = false
     this.previousHands = []
@@ -378,7 +377,7 @@ export class HandTrackingService {
 
     const offsetX = (screenWidth - drawWidth) / 2
     const offsetY = (screenHeight - drawHeight) / 2
-    const normalizedX = this.facingMode === 'user' ? 1 - point.x : point.x
+    const normalizedX = this.mirrored ? 1 - point.x : point.x
 
     return {
       x: offsetX + normalizedX * drawWidth,
